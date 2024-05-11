@@ -76,19 +76,23 @@ class InstanceNorm(nn.Module):
 
 
 class LinearAttention(nn.Module):
-    def __init__(self, embed_dim: int, enhancement: float = 1.0, bias: bool = False):
+    def __init__(self, embed_dim: int, bias: bool = False):
 
         super().__init__()
 
-        self.inner_dim = int(embed_dim * enhancement)
+        self.query_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.key_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.value_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
-        self.query_proj = nn.Linear(embed_dim, self.inner_dim, bias=bias)
-        self.key_proj = nn.Linear(embed_dim, self.inner_dim, bias=bias)
-        self.value_proj = nn.Linear(embed_dim, self.inner_dim, bias=bias)
-        self.out_proj = nn.Linear(self.inner_dim, embed_dim, bias=bias)
+        self.key_norm = InstanceNorm(embed_dim)
+        self.value_norm = InstanceNorm(embed_dim)
 
-        self.key_norm = InstanceNorm(self.inner_dim)
-        self.value_norm = InstanceNorm(self.inner_dim)
+        with torch.no_grad():
+            query_weight = torch.empty_like(self.query_proj.weight)
+            nn.init.orthogonal_(query_weight, gain=1 / embed_dim)
+            query_weight = query_weight + torch.eye(embed_dim) / embed_dim
+            self.query_proj.weight.copy_(query_weight)
 
     def forward(
         self, query: Tensor, key: Tensor, value: Tensor, *, weights: Optional[Tensor] = None
