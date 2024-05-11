@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ggda"
+authors = [
+    { name = "Matija Medvidovic", email = "matija.medvidovic@gmail.com" },
+]
+maintainers = [
+    { name = "Matija Medvidovic", email = "matija.medvidovic@gmail.com" },
+]
+description = "Global Density Approximation: Research code for learning for nonlocal neural-network distillation of the electronic density functional theory."
+readme = "README.md"
+license = { file = "LICENSE" }
+classifiers = ["Programming Language :: Python :: 3"]
+dependencies = ["numpy", "scipy", "torch", "einops"]
+requires-python = ">=3.9"
+keywords = [
+    "density-functional theory",
+    "machine learning",
+    "neural network",
+    "quantum chemistry",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+pyscf = ["pyscf"]
+
+[project.urls]
+Repository = "https://github.com/Matematija/global-density-approximation"
