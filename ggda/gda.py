@@ -23,8 +23,9 @@ class FieldEmbedding(nn.Module):
 
         assert embed_dim % 2 == 0, "Embedding dimension must be even"
 
-        self.field_embed = nn.Sequential(nn.Linear(1, embed_dim // 2), nn.Tanh())
+        self.field_embed = nn.Sequential(nn.Linear(1, embed_dim // 2, bias=False), nn.Tanh())
         self.coord_embed = CoordinateEncoding(embed_dim // 2, init_std)
+
         self.mlp = MLP(embed_dim, enhancement, activation)
 
     def forward(self, rho: LongTensor, coords: Tensor) -> Tensor:
@@ -32,8 +33,8 @@ class FieldEmbedding(nn.Module):
         x1 = torch.log(rho + 1e-4).unsqueeze(-1)
         x1 = self.field_embed(x1)
         x2 = self.coord_embed(coords)
-
         x = torch.cat([x1, x2], dim=-1)
+
         return self.mlp(x)
 
 
