@@ -1,5 +1,9 @@
+from typing import Optional
+
 import torch
 from torch import Tensor
+
+from einops import rearrange
 
 
 def ttf(rho: Tensor) -> Tensor:
@@ -54,3 +58,28 @@ def lda_xc(rho: Tensor) -> Tensor:
 
 def lda(rho: Tensor) -> Tensor:
     return lda_x(rho) + lda_c(rho)
+
+
+def dipole_moment(wrho: Tensor, coords: Tensor, norm: Optional[Tensor] = None) -> Tensor:
+
+    if norm is not None:
+        wrho = wrho / norm.unsqueeze(-1)
+
+    return torch.einsum("...n,...ni->...i", wrho, coords)
+
+
+def quadrupole_moment(
+    wrho: Tensor, coords: Tensor, traceless: bool = True, norm: Optional[Tensor] = None
+) -> Tensor:
+
+    if norm is not None:
+        wrho = wrho / norm.unsqueeze(-1)
+
+    ndim = coords.shape[-1]
+    Q = ndim * torch.einsum("...n,...ni,...nj->...ij", wrho, coords, coords)
+
+    if traceless:
+        trace = torch.einsum("...ii->...", Q / ndim)
+        Q = Q - rearrange(trace, "... -> ... 1 1")
+
+    return Q

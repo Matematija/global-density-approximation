@@ -3,55 +3,83 @@ from typing import Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch import Tensor, LongTensor
+from torch import Tensor
 
-from .layers import MLP, LinearAttention, CoordinateEncoding
-from .features import lda_x
+from .layers import MLP
+from .features import lda
+from .symmetry import principal_axes_rotation
 from .utils import Activation, log_cosh, activation_func
 
 
-class FieldEmbedding(nn.Module):
+class WaveletEmbedding(nn.Module):
+    def __init__(self, embed_dim: int, n_gaussians: int, modes_per_gaussian: int, max_std: float):
+
+        super().__init__()
+
+        std_vals = torch.linspace(0, max_std, n_gaussians + 1)[1:]
+        self.register_buffer("stds", std_vals)
+
+        k_vals = torch.randn(n_gaussians, modes_per_gaussian, 3)
+        k_vals = (2 * torch.pi / std_vals)[..., None, None] * k_vals
+        self.k = nn.Parameter(k_vals)
+
+        self.lift = nn.Linear(modes_per_gaussian, embed_dim)
+
+    def eval_basis(self, coords: Tensor) -> Tensor:
+
+        z = coords.unsqueeze(-1) / self.stds
+        envelope = torch.exp(-(z**2) / 2)
+        # envelope.shape = (n_coords, n_gaussians)
+
+        phases = torch.einsum("...xc,skc->...skx", coords, self.k)
+        waves = torch.cos(phases)
+        # waves.shape = (... n_gaussians, n_modes, n_coords)
+
+        k2 = torch.sum(self.k**2, dim=-1)
+        s2 = self.stds.unsqueeze(-1) ** 2
+        norms = torch.exp(-0.5 * k2 * s2) / (2 * torch.pi * s2) ** (3 / 2)
+        # norms.shape = (n_modes, n_gaussians)
+
+        return torch.einsum("ks,...xs,...skx->...skx", norms, envelope, waves)
+
+    def forward(self, wrho: Tensor, coords: Tensor) -> Tensor:
+        basis = self.eval_basis(coords)
+        phi = torch.einsum("...x,...skx->...sk", wrho, basis)
+        return self.lift(phi)
+
+
+class Transformer(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        init_std: float = 0.1,
+        n_blocks: int,
+        n_heads: Optional[int] = None,
         enhancement: float = 4.0,
         activation: Activation = "gelu",
     ):
 
         super().__init__()
 
-        assert embed_dim % 2 == 0, "Embedding dimension must be even"
+        n_heads = n_heads or max(embed_dim // 64, 1)
+        mlp_width = int(embed_dim * enhancement)
+        activation = activation_func(activation)
 
-        self.field_embed = nn.Sequential(nn.Linear(1, embed_dim // 2, bias=False), nn.Tanh())
-        self.coord_embed = CoordinateEncoding(embed_dim // 2, init_std)
+        block = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=n_heads,
+            dim_feedforward=mlp_width,
+            activation=activation,
+            dropout=0.0,
+            batch_first=True,
+            norm_first=True,
+        )
 
-        self.mlp = MLP(embed_dim, enhancement, activation)
+        self.encoder = nn.TransformerEncoder(
+            block, num_layers=n_blocks, norm=nn.LayerNorm(embed_dim)
+        )
 
-    def forward(self, rho: LongTensor, coords: Tensor) -> Tensor:
-
-        x1 = torch.log(rho + 1e-4).unsqueeze(-1)
-        x1 = self.field_embed(x1)
-        x2 = self.coord_embed(coords)
-        x = torch.cat([x1, x2], dim=-1)
-
-        return self.mlp(x)
-
-
-class InteractionBlock(nn.Module):
-    def __init__(self, embed_dim: int, enhancement: float, activation: Activation = "gelu"):
-
-        super().__init__()
-
-        self.attn = LinearAttention(embed_dim)
-        self.mlp = MLP(embed_dim, enhancement, activation)
-
-        self.attn_norm = nn.LayerNorm(embed_dim)
-        self.mlp_norm = nn.LayerNorm(embed_dim)
-
-    def forward(self, f: Tensor, weights: Optional[Tensor] = None) -> Tensor:
-        f = self.attn_norm(f + self.attn(f, f, f, weights=weights))
-        return self.mlp_norm(f + self.mlp(f))
+    def forward(self, x: Tensor) -> Tensor:
+        return self.encoder(x)
 
 
 class FieldProjection(nn.Module):
@@ -72,39 +100,59 @@ class FieldProjection(nn.Module):
         self.proj = nn.Linear(embed_dim, out_features)
 
     def forward(self, x: Tensor) -> Tensor:
-        h = self.activation(self.norm(self.mlp(x)))
-        return self.proj(h)
+        return self.proj(self.activation(self.norm(self.mlp(x))))
 
 
 class GlobalDensityApprox(nn.Module):
     def __init__(
         self,
         embed_dim: int,
+        n_gaussians: int,
+        modes_per_gaussian: int,
+        max_std: float,
         n_blocks: int,
-        init_std: float = 0.1,
         enhancement: float = 4.0,
         activation: Activation = "gelu",
     ):
 
         super().__init__()
 
-        self.embedding = FieldEmbedding(embed_dim, init_std, enhancement, activation)
-
-        make_block = lambda: InteractionBlock(embed_dim, enhancement, activation)
-        self.blocks = nn.ModuleList(make_block() for _ in range(n_blocks))
-
+        self.embedding = WaveletEmbedding(embed_dim, n_gaussians, modes_per_gaussian, max_std)
+        self.transformer = Transformer(embed_dim, n_blocks, enhancement, activation)
         self.projection = FieldProjection(embed_dim, 2, enhancement, activation)
 
-    def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+    def scale_and_bias(self, wrho: Tensor, coords: Tensor) -> Tensor:
 
-        phi = self.embedding(rho, coords)
+        symmetry = principal_axes_rotation(wrho, coords)
+        coords = symmetry(coords)
 
-        for block in self.blocks:
-            phi = block(phi, weights)
-
+        phi = self.embedding(wrho, coords)
+        phi = self.transformer(phi)
         y = self.projection(phi)
 
         scale, bias = y.unbind(dim=-1)
         scale, bias = F.softplus(scale), -log_cosh(bias)
 
-        return scale * lda_x(rho.clip(min=1e-7)) + bias
+        return torch.stack([scale, bias], dim=-1)
+
+    def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+
+        rho.requires_grad_(True)
+        wrho = weights * rho
+
+        exc_lda = rho * lda(rho.clip(min=1e-7))
+        E_lda = torch.einsum("...n,...n->...", weights, exc_lda)
+
+        vxc_lda = torch.autograd.grad(
+            E_lda, rho, grad_outputs=torch.ones_like(E_lda), create_graph=True
+        )
+
+        sb = self.scale_and_bias(wrho, coords)
+
+        (grad_sb,) = torch.autograd.grad(
+            sb, wrho, grad_outputs=torch.ones_like(sb), create_graph=True
+        )
+
+        grad_scale, grad_bias = grad_sb.unbind(dim=-1)
+
+        return
