@@ -21,16 +21,14 @@ def diagonalizing_rotation(Q: Tensor) -> Tensor:
     return R
 
 
-def principal_axes_rotation(
-    rho: Tensor, coords: Tensor, weights: Tensor, normalize: bool = True
-) -> Tensor:
+def principal_axes_rotation(wrho: Tensor, coords: Tensor, normalize: bool = True) -> Tensor:
 
-    norm = torch.einsum("...n,...n->...", weights, rho) if normalize else None
+    norm = torch.sum(wrho, dim=-1) if normalize else None
 
-    p = dipole_moment(rho, coords, weights, norm)
+    p = dipole_moment(wrho, coords, norm=norm)
     shifted_coords = coords - p.unsqueeze(-2)
 
-    Q = quadrupole_moment(rho, shifted_coords, weights, norm=norm)
+    Q = quadrupole_moment(wrho, shifted_coords, norm=norm)
     R = diagonalizing_rotation(Q)
 
     return Symmetry(p, R)
