@@ -16,7 +16,7 @@ class DensityPooling(nn.Module):
 
         self.eps = eps
 
-        stds = torch.linspace(0.0, max_std, n_basis + 1)[:-1]
+        stds = torch.linspace(0.0, max_std, n_basis + 1)[1:]
         self.register_buffer("gammas", 1 / (2 * stds**2))
 
         self.lift = nn.Linear(n_basis, embed_dim, bias=False)
@@ -26,7 +26,7 @@ class DensityPooling(nn.Module):
         norms = (torch.pi / self.gammas) ** (3 / 2)
         basis_vals = norms * torch.exp(-self.gammas * distances.unsqueeze(-1) ** 2)
 
-        pooled_rho = torch.einsum("...ijs,...i->...js", basis_vals, wrho)
+        pooled_rho = torch.einsum("...xas,...x->...as", basis_vals, wrho)
         phi = torch.log(pooled_rho + self.eps)
 
         return self.lift(phi)

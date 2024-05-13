@@ -25,10 +25,15 @@ class EncoderBlock(nn.Module):
         self.attn_norm = nn.LayerNorm(embed_dim)
         self.mlp_norm = nn.LayerNorm(embed_dim)
 
+    # def forward(self, x: Tensor, distances: Tensor) -> Tensor:
+    #     attn = self.attention(x, x, x, distances)
+    #     x = self.attn_norm(x + attn)
+    #     return self.mlp_norm(x + self.mlp(x))
+
     def forward(self, x: Tensor, distances: Tensor) -> Tensor:
-        attn = self.attention(x, x, x, distances)
-        x = self.attn_norm(x + attn)
-        return self.mlp_norm(x + self.mlp(x))
+        y = self.attn_norm(x)
+        x = x + self.attention(y, y, y, distances)
+        return x + self.mlp(self.mlp_norm(x))
 
 
 class Encoder(nn.Module):
@@ -47,6 +52,7 @@ class Encoder(nn.Module):
 
         self.coord_embed = CoordinateEncoding(embed_dim, init_std=0.05, n_modes=256)
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
+        self.final_norm = nn.LayerNorm(embed_dim)
 
     def forward(self, phi: Tensor, coords: Tensor) -> Tensor:
 
@@ -58,4 +64,4 @@ class Encoder(nn.Module):
         for block in self.blocks:
             x = block(x, distances)
 
-        return x
+        return self.final_norm(x)
