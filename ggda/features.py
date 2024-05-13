@@ -83,3 +83,38 @@ def quadrupole_moment(
         Q = Q - rearrange(trace, "... -> ... 1 1")
 
     return Q
+
+
+def mean_displacement(wrho: Tensor, coords: Tensor, norm: Optional[Tensor] = None) -> Tensor:
+
+    if norm is None:
+        norm = torch.sum(wrho, dim=-1)
+
+    return dipole_moment(wrho, coords, norm=norm)
+
+
+def covariance_matrix(
+    wrho: Tensor, coords: Tensor, mean: Optional[Tensor] = None, norm: Optional[Tensor] = None
+) -> Tensor:
+
+    if norm is None:
+        norm = torch.sum(wrho, dim=-1)
+
+    if mean is None:
+        mean = mean_displacement(wrho, coords, norm=norm)
+
+    r_bar = coords - mean.unsqueeze(-2)
+
+    return torch.einsum("...n,...ni,...nj->...ij", wrho / norm, r_bar, r_bar)
+
+
+def mean_and_covariance(wrho: Tensor, coords: Tensor) -> Tensor:
+
+    p = wrho / torch.sum(wrho, dim=-1, keepdim=True)
+
+    mean = torch.einsum("...n,...ni->...i", p, coords)
+    r_bar = coords - mean.unsqueeze(-2)
+
+    cov = torch.einsum("...n,...ni,...nj->...ij", p, r_bar, r_bar)
+
+    return mean, cov
