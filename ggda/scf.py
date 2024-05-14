@@ -1,4 +1,4 @@
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 from warnings import warn
 
@@ -10,6 +10,7 @@ from torch import Tensor
 
 from pyscf import gto, dft
 from pyscf.dft.numint import NumInt
+from pyscf.gto.eval_gto import BLKSIZE
 
 from .gda import GlobalDensityApprox
 
@@ -18,9 +19,13 @@ KohnShamDFT = dft.RKS
 Grid = dft.gen_grid.Grids
 
 
-class GridChunk(NamedTuple):
+class CachedGrid(NamedTuple):
+
     coords: Tensor
     weights: Tensor
+
+    def __len__(self):
+        return len(self.weights)
 
 
 class GDANumInt(NumInt):
@@ -38,24 +43,18 @@ class GDANumInt(NumInt):
 
         self.gda.zero_grad()
 
-        self._mol_data = None
-        self._grid_chunk = None
+        self._grid = None
 
     def _xc_type(self, *_, **__):
         return "LDA"
 
-    @property
-    def is_encoded(self):
-        return self._mol_data is not None
+    def cache_grid(self, grids: Grid):
 
-    def encode_molecule(self, mol: Molecule):
+        coords, weights = grids.coords, grids.weights
+        coords_ = torch.tensor(coords, device=self.device, dtype=torch.float32)
+        weights_ = torch.tensor(weights, device=self.device, dtype=torch.float32)
 
-        atom_coords, atom_charges = mol.atom_coords(), mol.atom_charges()
-        atom_coords = torch.from_numpy(atom_coords).to(device=self.device, dtype=torch.float32)
-        atom_charges = torch.from_numpy(atom_charges).to(device=self.device, dtype=torch.long)
-
-        with torch.no_grad():
-            return self.gda.encode(atom_coords, atom_charges)
+        self._grid = CachedGrid(coords_, weights_)
 
     def block_loop(
         self,
@@ -69,10 +68,13 @@ class GDANumInt(NumInt):
         buf=None,
     ):
 
-        if not self.is_encoded:
-            self._mol_data = self.encode_molecule(mol)
+        npts = len(grids.weights)
+        blksize = (npts // BLKSIZE + 1) * BLKSIZE
 
-        for ao, mask, weights, coords in super().block_loop(
+        if self._grid is None or len(self._grid) != npts:
+            self.cache_grid(grids)
+
+        return super().block_loop(
             mol=mol,
             grids=grids,
             nao=nao,
@@ -81,23 +83,19 @@ class GDANumInt(NumInt):
             non0tab=non0tab,
             blksize=blksize,
             buf=buf,
-        ):
-
-            coords_ = torch.tensor(coords, device=self.device, dtype=torch.float32)
-            weights_ = torch.tensor(weights, device=self.device, dtype=torch.float32)
-            self._grid_chunk = GridChunk(coords_, weights_)
-
-            yield ao, mask, weights, coords
+        )
 
     def eval_exc(self, rho: Tensor, spin: int = 0) -> Tensor:
 
+        coords, weights = self._grid
+
         if spin == 0:
-            exc = self.gda.predict(rho, self._grid_chunk.coords, self._mol_data)
+            exc = self.gda.predict(rho, coords, weights)
 
         else:
-            rho_a, rho_b = torch.unbind(rho, dim=0)
-            exc_a = self.gda.predict(2 * rho_a, self._grid_chunk.coords, self._mol_data)
-            exc_b = self.gda.predict(2 * rho_b, self._grid_chunk.coords, self._mol_data)
+            rho_a, rho_b = rho.unbind(dim=0)
+            exc_a = self.gda.predict(2 * rho_a, coords, weights)
+            exc_b = self.gda.predict(2 * rho_b, coords, weights)
             exc = (exc_a + exc_b) / 2
 
         return exc
@@ -118,32 +116,6 @@ class GDANumInt(NumInt):
             vrho = torch.stack([vrho_a, vrho_b], dim=0)
 
         return vrho
-
-    def eval_fxc(
-        self, rho: Tensor, vxc: Tensor, spin: int = 0, *, create_graph: bool = False
-    ) -> Tensor:
-
-        if spin == 0:
-            grad_outputs = torch.ones_like(rho)
-            (v2rho,) = autograd.grad(vxc, rho, grad_outputs=grad_outputs, create_graph=create_graph)
-
-        else:
-            rho_a, rho_b = torch.unbind(rho, dim=0)
-            vxc_a, vxc_b = torch.unbind(vxc, dim=0)
-            grad_outputs = torch.ones_like(rho_a)
-
-            # fmt: off
-            (v2rho_aa,) = autograd.grad(vxc_a, rho_a, grad_outputs=grad_outputs, create_graph=create_graph)
-            (v2rho_ab,) = autograd.grad(vxc_a, rho_b, grad_outputs=grad_outputs, create_graph=create_graph)
-            (v2rho_bb,) = autograd.grad(vxc_b, rho_b, grad_outputs=grad_outputs, create_graph=create_graph)
-            # fmt: on
-
-            v2rho = torch.stack([v2rho_aa, v2rho_ab, v2rho_bb], dim=0)
-
-        return v2rho
-
-    def eval_kxc(self, *_, **__) -> Tensor:
-        raise NotImplementedError("Third density derivatives of functionals are not supported yet!")
 
     @staticmethod
     def to_numpy(t: Tensor) -> np.ndarray:
