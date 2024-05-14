@@ -41,6 +41,7 @@ class GlobalDensityApprox(nn.Module):
         n_basis: int,
         max_std: float = 4.0,
         grid_size: int = 8,
+        n_heads: int = None,
         enhancement: float = 4.0,
         activation: Activation = "gelu",
     ):
@@ -53,6 +54,7 @@ class GlobalDensityApprox(nn.Module):
         self.encoder = Encoder(
             embed_dim=embed_dim,
             n_blocks=n_encoder_blocks,
+            n_heads=n_heads,
             enhancement=enhancement,
             activation=activation,
         )
@@ -61,6 +63,7 @@ class GlobalDensityApprox(nn.Module):
             embed_dim=embed_dim,
             out_features=2,
             n_blocks=n_decoder_blocks,
+            n_heads=n_heads,
             enhancement=enhancement,
             activation=activation,
         )
