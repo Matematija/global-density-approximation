@@ -105,7 +105,7 @@ class ProximalAttention(nn.Module):
         value: Tensor,
         distances: Tensor,
         *,
-        kv_mask: Optional[BoolTensor] = None
+        kv_mask: Optional[BoolTensor] = None,
     ) -> Tensor:
 
         mass = log_cosh(self.mass_proj(key))
@@ -135,6 +135,6 @@ class Attention(nn.Module):
     def forward(
         self, query: Tensor, key: Tensor, value: Tensor, *, kv_mask: Optional[BoolTensor] = None
     ) -> Tensor:
-
-        out, _ = self.attention(query, key, value, key_padding_mask=~kv_mask, need_weights=False)
+        mask = ~kv_mask if kv_mask is not None else None
+        out, _ = self.attention(query, key, value, key_padding_mask=mask, need_weights=False)
         return out

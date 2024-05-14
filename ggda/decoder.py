@@ -4,8 +4,8 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .layers import CoordinateEncoding, MLP, ProximalAttention
-from .utils import Activation, activation_func, std_scale
+from .layers import CoordinateEncoding, MLP, Attention
+from .utils import Activation, activation_func
 
 
 class DensityEmbedding(nn.Module):
@@ -52,7 +52,7 @@ class DecoderBlock(nn.Module):
 
         super().__init__()
 
-        self.attention = ProximalAttention(embed_dim, n_heads)
+        self.attention = Attention(embed_dim, n_heads)
         self.mlp = MLP(embed_dim, enhancement, activation=activation)
 
         self.attn_norm = nn.LayerNorm(embed_dim)
@@ -63,8 +63,8 @@ class DecoderBlock(nn.Module):
     #     phi = self.attn_norm(phi + attn)
     #     return self.mlp_norm(phi + self.mlp(phi))
 
-    def forward(self, phi: Tensor, context: Tensor, distances: Tensor) -> Tensor:
-        phi = phi + self.attention(self.attn_norm(phi), context, context, distances)
+    def forward(self, phi: Tensor, context: Tensor) -> Tensor:
+        phi = phi + self.attention(self.attn_norm(phi), context, context)
         return phi + self.mlp(self.mlp_norm(phi))
 
 
@@ -109,12 +109,11 @@ class Decoder(nn.Module):
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
         self.project = FieldProjection(embed_dim, out_features, activation=activation)
 
-    def forward(self, rho: Tensor, coords: Tensor, context: Tensor, distances: Tensor) -> Tensor:
+    def forward(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
 
         phi = self.embedding(rho, coords)
-        distances = std_scale(distances, eps=1e-5)
 
         for block in self.blocks:
-            phi = block(phi, context, distances)
+            phi = block(phi, context)
 
         return self.project(phi)
