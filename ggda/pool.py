@@ -1,7 +1,11 @@
 import torch
 from torch import nn
 from torch import Tensor
+
+import pykeops
 from pykeops.torch import Genred
+
+pykeops.set_verbose(False)
 
 
 class GaussianPool(nn.Module):
