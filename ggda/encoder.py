@@ -5,7 +5,7 @@ from torch import nn
 from torch import Tensor
 
 from .layers import CoordinateEncoding, MLP, ProximalAttention
-from .utils import Activation, std_scale
+from .utils import Activation, std_scale, dist
 
 
 class EncoderBlock(nn.Module):
@@ -57,9 +57,7 @@ class Encoder(nn.Module):
     def forward(self, phi: Tensor, coords: Tensor) -> Tensor:
 
         x = phi + self.coord_embed(coords)
-
-        distances = torch.cdist(coords, coords)
-        distances = std_scale(distances, eps=1e-5)
+        distances = std_scale(dist(coords, coords + 1e-5))
 
         for block in self.blocks:
             x = block(x, distances)

@@ -42,6 +42,14 @@ def activation_func(activation: Activation) -> Callable[[Tensor], Tensor]:
         raise ValueError("Activation must be a callable or a string!")
 
 
+def dist(x: Tensor, y: Tensor) -> Tensor:
+    return torch.norm(x[..., :, None, :] - y[..., None, :, :], dim=-1)
+
+
+def sqdist(x: Tensor, y: Tensor) -> Tensor:
+    return torch.sum((x[..., :, None, :] - y[..., None, :, :]) ** 2, dim=-1)
+
+
 def std_scale(
     x: Tensor,
     dims: Union[int, Sequence[int]] = -1,

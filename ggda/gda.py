@@ -6,7 +6,7 @@ from torch import Tensor
 from .encoder import Encoder
 from .decoder import Decoder
 from .features import lda_x, mean_and_covariance
-from .utils import Activation, log_cosh, cubic_grid
+from .utils import Activation, log_cosh, cubic_grid, dist
 
 
 class DensityPooling(nn.Module):
@@ -70,9 +70,9 @@ class GlobalDensityApprox(nn.Module):
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
 
-        coords = (coords - means.unsqueeze(-2)) @ R.detach()
-        anchor_coords = 3 * torch.sqrt(s2).unsqueeze(-2) * self.grid
-        distances = torch.cdist(coords, anchor_coords)
+        coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
+        anchor_coords = 3 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
+        distances = dist(coords, anchor_coords)
 
         phi = self.pooling(wrho, distances)
         context = self.encoder(phi, anchor_coords)
