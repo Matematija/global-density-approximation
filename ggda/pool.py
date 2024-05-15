@@ -39,18 +39,3 @@ class GaussianPool(nn.Module):
             )
 
         return fconv / self.norms
-
-
-class DensityPooling(nn.Module):
-    def __init__(self, embed_dim: int, n_basis: int, max_std: float = 4, eps: float = 1e-4):
-
-        super().__init__()
-
-        self.eps = eps
-        self.gaussian_pool = GaussianPool(n_basis, max_std)
-        self.lift = nn.Linear(n_basis, embed_dim)
-
-    def forward(self, wrho: Tensor, coords: Tensor, anchor_coords: Tensor) -> Tensor:
-        pooled_rho = self.gaussian_pool(wrho, coords, anchor_coords)
-        phi = torch.log(pooled_rho + self.eps)
-        return self.lift(phi)

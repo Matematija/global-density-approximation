@@ -3,11 +3,11 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import DensityPooling
+from .pool import GaussianPool
 from .encoder import Encoder
 from .decoder import Decoder
 from .features import lda_x, mean_and_covariance
-from .utils import Activation, log_cosh, cubic_grid
+from .utils import Activation, log_cosh, cubic_grid, dist
 
 
 class GlobalDensityApprox(nn.Module):
@@ -21,15 +21,16 @@ class GlobalDensityApprox(nn.Module):
         grid_size: int = 8,
         n_heads: int = None,
         enhancement: float = 4.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(grid_size))
-        self.pooling = DensityPooling(embed_dim, n_basis, max_std)
+        self.pooling = GaussianPool(n_basis, max_std)
 
         self.encoder = Encoder(
+            n_basis=n_basis,
             embed_dim=embed_dim,
             n_blocks=n_encoder_blocks,
             n_heads=n_heads,
@@ -52,18 +53,21 @@ class GlobalDensityApprox(nn.Module):
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
         anchor_coords = 3 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
+        distances = dist(coords, anchor_coords)
 
         phi = self.pooling(wrho, coords, anchor_coords)
-        return self.encoder(phi, anchor_coords)
+        context = self.encoder(phi, anchor_coords)
 
-    def decode(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
+        return context, distances
 
-        y = self.decoder(rho, coords, context)
+    def decode(self, rho: Tensor, coords: Tensor, context: Tensor, distances: Tensor) -> Tensor:
+
+        y = self.decoder(rho, coords, context, distances)
         scale, bias = y.unbind(dim=-1)
         scale, bias = F.softplus(scale), -log_cosh(bias)
 
         return scale * lda_x(rho.clip(min=1e-7)) + bias
 
     def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-        context = self.encode(weights * rho, coords)
-        return self.decode(rho, coords, context)
+        context, distances = self.encode(weights * rho, coords)
+        return self.decode(rho, coords, context, distances)

@@ -63,6 +63,42 @@ class CoordinateEncoding(nn.Module):
         return self.proj(x)
 
 
+class FieldEmbedding(nn.Module):
+    def __init__(
+        self,
+        in_components: int,
+        embed_dim: int,
+        n_modes: int,
+        init_std: float,
+        enhancement: float = 4.0,
+        activation: Activation = "silu",
+        eps: float = 1e-4,
+    ):
+
+        super().__init__()
+
+        assert embed_dim % 2 == 0, "Embedding dimension must be even."
+
+        # self.activation = activation_func(activation)
+        self.eps = eps
+
+        self.field_embed = nn.Linear(in_components, embed_dim // 2, bias=False)
+        self.coord_embed = CoordinateEncoding(embed_dim // 2, init_std, n_modes=n_modes)
+
+        # self.norm = nn.LayerNorm(embed_dim)
+        self.mlp = MLP(embed_dim, enhancement, activation)
+
+    def forward(self, field: Tensor, coords: Tensor) -> Tensor:
+
+        log_field = torch.log(field + self.eps)
+        field_emb = self.field_embed(log_field)
+        coord_emb = self.coord_embed(coords)
+
+        x = torch.cat([field_emb, coord_emb], dim=-1)
+        # return self.mlp(self.activation(self.norm(x)))
+        return self.mlp(x)
+
+
 class InstanceNorm(nn.Module):
     def __init__(self, embed_dim: int, eps: float = 1e-5):
 
