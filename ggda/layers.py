@@ -79,14 +79,14 @@ class FieldEmbedding(nn.Module):
 
         assert embed_dim % 2 == 0, "Embedding dimension must be even."
 
-        # self.activation = activation_func(activation)
+        self.activation = activation_func(activation)
+        self.width = int(embed_dim * enhancement)
         self.eps = eps
 
-        self.field_embed = nn.Linear(in_components, embed_dim // 2, bias=False)
-        self.coord_embed = CoordinateEncoding(embed_dim // 2, init_std, n_modes=n_modes)
+        self.field_embed = nn.Linear(in_components, self.width, bias=False)
+        self.coord_embed = CoordinateEncoding(self.width, init_std, n_modes=n_modes)
 
-        # self.norm = nn.LayerNorm(embed_dim)
-        self.mlp = MLP(embed_dim, enhancement, activation)
+        self.proj = nn.Linear(self.width, embed_dim)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
 
@@ -94,9 +94,8 @@ class FieldEmbedding(nn.Module):
         field_emb = self.field_embed(log_field)
         coord_emb = self.coord_embed(coords)
 
-        x = torch.cat([field_emb, coord_emb], dim=-1)
-        # return self.mlp(self.activation(self.norm(x)))
-        return self.mlp(x)
+        x = self.activation(coord_emb) * field_emb
+        return self.proj(x)
 
 
 class InstanceNorm(nn.Module):
