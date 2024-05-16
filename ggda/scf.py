@@ -117,6 +117,18 @@ class GDANumInt(NumInt):
 
         return vrho
 
+    def eval_fxc(
+        self, rho: Tensor, vrho: Tensor, spin: int = 0, *, create_graph: bool = False
+    ) -> Tensor:
+
+        raise NotImplementedError("Second functional derivative not implemented.")
+
+    def eval_kxc(
+        self, rho: Tensor, v2rho: Tensor, spin: int = 0, *, create_graph: bool = False
+    ) -> Tensor:
+
+        raise NotImplementedError("Third functional derivative not implemented.")
+
     @staticmethod
     def to_numpy(t: Tensor) -> np.ndarray:
         return t.detach().cpu().numpy().astype(np.float64)
