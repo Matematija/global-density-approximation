@@ -2,65 +2,51 @@ from typing import Optional
 
 import torch
 from torch import nn
-from torch import Tensor, BoolTensor
+from torch import Tensor
 
 from einops import rearrange
 
-from .utils import Activation, activation_func, log_cosh
-
-
-class MLP(nn.Module):
-    def __init__(
-        self,
-        features: int,
-        enhancement: float,
-        activation: Activation = "gelu",
-        n_hidden: int = 0,
-        out_features: Optional[int] = None,
-        bias: bool = True,
-    ):
-
-        super().__init__()
-
-        self.activation = activation_func(activation)
-
-        in_features = features
-        out_features = out_features or features
-        width = int(features * enhancement)
-
-        self.in_linear = nn.Linear(in_features, width, bias=bias)
-        self.hidden = nn.ModuleList([nn.Linear(width, width, bias=bias) for _ in range(n_hidden)])
-        self.out_linear = nn.Linear(width, out_features, bias=bias)
-
-    def forward(self, x: Tensor) -> Tensor:
-
-        h = self.activation(self.in_linear(x))
-
-        for linear in self.hidden:
-            h = self.activation(linear(h))
-
-        return self.out_linear(h)
+from .utils import Activation, ShapeOrInt, activation_func
 
 
 class CoordinateEncoding(nn.Module):
-    def __init__(self, embed_dim: int, init_std: float, n_modes: int, ndim: int = 3):
+    def __init__(self, embed_dim: int, init_std: float, ndim: int = 3):
 
         super().__init__()
 
         assert embed_dim >= 2, "Embedding dimension must be at least 2."
         assert embed_dim % 2 == 0, "Embedding dimension must be even."
 
-        self.n_modes = n_modes
-
-        self.mode_lift = nn.Linear(ndim, n_modes, bias=False)
-        nn.init.normal_(self.mode_lift.weight, std=2 * torch.pi * init_std)
-
-        self.proj = nn.Linear(2 * n_modes, embed_dim, bias=False)
+        self.mode_lift = nn.Linear(ndim, embed_dim // 2, bias=False)
+        nn.init.normal_(self.mode_lift.weight, std=1 / init_std)
 
     def forward(self, coords: Tensor) -> Tensor:
         emb = self.mode_lift(coords)
-        x = torch.cat([torch.cos(emb), torch.sin(emb)], dim=-1)
-        return self.proj(x)
+        return torch.cat([torch.cos(emb), torch.sin(emb)], dim=-1)
+
+
+class CoordinateEmbedding(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        init_std: float,
+        enhancement: float = 4.0,
+        activation: Activation = "silu",
+        bias: bool = True,
+    ):
+
+        super().__init__()
+
+        self.width = int(enhancement * embed_dim)
+
+        self.encode = CoordinateEncoding(self.width, init_std)
+        self.conv1 = nn.Conv3d(self.width, self.width, kernel_size=1, bias=bias)
+        self.conv2 = nn.Conv3d(self.width, embed_dim, kernel_size=1, bias=bias)
+        self.activation = activation_func(activation)
+
+    def forward(self, coords: Tensor) -> Tensor:
+        emb = rearrange(self.encode(coords), "... x y z c -> ... c x y z")
+        return self.conv2(self.activation(self.conv1(emb)))
 
 
 class FieldEmbedding(nn.Module):
@@ -68,108 +54,101 @@ class FieldEmbedding(nn.Module):
         self,
         in_components: int,
         embed_dim: int,
-        n_modes: int,
-        init_std: float,
+        n_groups: int = 4,
         enhancement: float = 4.0,
         activation: Activation = "silu",
-        eps: float = 1e-4,
+        bias: bool = True,
     ):
 
         super().__init__()
 
-        assert embed_dim % 2 == 0, "Embedding dimension must be even."
-
         self.activation = activation_func(activation)
         self.width = int(embed_dim * enhancement)
-        self.eps = eps
 
-        self.field_embed = nn.Linear(in_components, self.width, bias=False)
-        self.coord_embed = CoordinateEncoding(self.width, init_std, n_modes=n_modes)
+        self.conv1 = nn.Conv3d(in_components, self.width, kernel_size=1, bias=bias)
+        self.conv2 = nn.Conv3d(self.width, embed_dim, kernel_size=1, bias=bias)
+        self.norm = nn.GroupNorm(n_groups, self.width)
 
-        self.proj = nn.Linear(self.width, embed_dim)
-
-    def forward(self, field: Tensor, coords: Tensor) -> Tensor:
-
-        log_field = torch.log(field + self.eps)
-        field_emb = self.field_embed(log_field)
-        coord_emb = self.coord_embed(coords)
-
-        x = self.activation(coord_emb) * field_emb
-        return self.proj(x)
+    def forward(self, field: Tensor) -> Tensor:
+        emb = self.norm(self.conv1(field))
+        return self.conv2(self.activation(emb))
 
 
-class InstanceNorm(nn.Module):
-    def __init__(self, embed_dim: int, eps: float = 1e-5):
-
-        super().__init__()
-
-        self.scale = nn.Parameter(torch.ones(embed_dim))
-        self.bias = nn.Parameter(torch.zeros(embed_dim))
-        self.eps = eps
-
-    def forward(self, f: Tensor, weights: Optional[Tensor] = None) -> Tensor:
-
-        if weights is None:
-            mean = f.mean(dim=-2, keepdim=True)
-            var = f.var(dim=-2, keepdim=True)
-        else:
-            mean = torch.einsum("...x,...xi->...i", weights, f).unsqueeze(-2)
-            var = torch.einsum("...x,...xi->...i", weights, (f - mean) ** 2).unsqueeze(-2)
-
-        f_bar = (f - mean) / torch.sqrt(var + self.eps)
-        return f_bar * self.scale + self.bias
-
-
-class ProximalAttention(nn.Module):
-    def __init__(self, embed_dim: int, n_heads: Optional[int] = None, bias: bool = False):
-
-        super().__init__()
-
-        self.n_heads = n_heads or max(embed_dim // 64, 1)
-
-        self.attention = nn.MultiheadAttention(
-            embed_dim, self.n_heads, bias=bias, dropout=False, batch_first=True
-        )
-
-        self.mass_proj = nn.Linear(embed_dim, self.n_heads, bias=bias)
-
-    def forward(
+class ConvBlock(nn.Module):
+    def __init__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        distances: Tensor,
-        *,
-        kv_mask: Optional[BoolTensor] = None,
-    ) -> Tensor:
+        embed_dim: int,
+        kernel_size: ShapeOrInt = 3,
+        n_groups: int = 4,
+        enhancement: float = 4.0,
+        activation: Activation = "silu",
+        bias: bool = True,
+    ):
 
-        mass = log_cosh(self.mass_proj(key))
-        bias = torch.einsum("...ah,...ia->...hia", -mass, distances)
+        super().__init__()
 
-        if kv_mask is not None:
-            kv_mask = rearrange(kv_mask, "... a -> ... 1 1 a")
-            bias = bias.masked_fill(~kv_mask, float("-inf"))
+        self.width = int(enhancement * embed_dim)
 
-        bias = rearrange(bias, "... h i a -> (... h) i a")
-        out, _ = self.attention(query, key, value, attn_mask=bias, need_weights=False)
+        self.lift = nn.Conv3d(embed_dim, self.width, kernel_size, padding="same", bias=bias)
+        self.proj = nn.Conv3d(self.width, embed_dim, kernel_size, padding="same", bias=bias)
+        self.coord_lift = nn.Conv3d(embed_dim, self.width, kernel_size=1, bias=bias)
 
-        return out
+        self.norm1 = nn.GroupNorm(n_groups, embed_dim)
+        self.norm2 = nn.GroupNorm(n_groups, self.width)
+
+        self.activation = activation_func(activation)
+
+    def forward(self, f: Tensor, x: Tensor) -> Tensor:
+
+        g = self.lift(self.activation(self.norm1(f)))
+        g = g + self.coord_lift(x)
+        g = self.proj(self.activation(self.norm2(g)))
+
+        return f + g
 
 
-class Attention(nn.Module):
-    def __init__(self, embed_dim: int, n_heads: Optional[int] = None, bias: bool = False):
+class AttentionBlock(nn.Module):
+    def __init__(
+        self, embed_dim: int, n_heads: Optional[int] = None, n_groups: int = 4, bias: bool = False
+    ):
 
         super().__init__()
 
         self.n_heads = n_heads or max(embed_dim // 64, 1)
 
+        self.norm = nn.GroupNorm(n_groups, embed_dim)
+
         self.attention = nn.MultiheadAttention(
-            embed_dim, self.n_heads, bias=bias, dropout=False, batch_first=True
+            embed_dim, self.n_heads, dropout=0.0, bias=bias, batch_first=True
         )
 
-    def forward(
-        self, query: Tensor, key: Tensor, value: Tensor, *, kv_mask: Optional[BoolTensor] = None
-    ) -> Tensor:
-        mask = ~kv_mask if kv_mask is not None else None
-        out, _ = self.attention(query, key, value, key_padding_mask=mask, need_weights=False)
-        return out
+    def forward(self, f: Tensor) -> Tensor:
+
+        *_, dx, dy, dz = f.shape
+
+        g = rearrange(self.norm(f), "... c x y z -> ... (xyz) c")
+        g = self.attention(g, g, g)
+        g = rearrange(g, "... (x y z) c -> ... c x y z", x=dx, y=dy, z=dz)
+
+        return f + g
+
+
+class FieldProjection(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        out_components: int,
+        n_groups: int = 4,
+        activation: Activation = "silu",
+        bias: bool = True,
+    ):
+
+        super().__init__()
+
+        self.activation = activation_func(activation)
+        self.norm = nn.GroupNorm(n_groups, embed_dim)
+        self.proj = nn.Conv3d(embed_dim, out_components, kernel_size=1, bias=bias)
+
+    def forward(self, f: Tensor) -> Tensor:
+        h = self.proj(self.activation(self.norm(f)))
+        return torch.mean(h, dim=(-3, -2, -1))

@@ -8,6 +8,7 @@ from torch import Tensor, BoolTensor
 from torch import device as Device, dtype as Dtype
 
 Activation = Union[str, Callable[[Tensor], Tensor]]
+ShapeOrInt = Union[int, Sequence[int]]
 
 
 def param_count(model: nn.Module) -> int:
@@ -67,11 +68,11 @@ def std_scale(
     return x / torch.sqrt(var + eps)
 
 
-_ShapeOrInt = Union[int, Sequence[int]]
-
-
 def cubic_grid(
-    npts: _ShapeOrInt, device: Optional[Device] = None, dtype: Optional[Dtype] = None
+    npts: ShapeOrInt,
+    stack_dim: int = -1,
+    device: Optional[Device] = None,
+    dtype: Optional[Dtype] = None,
 ) -> Tensor:
 
     nx, ny, nz = (npts,) * 3 if isinstance(npts, int) else npts
@@ -79,14 +80,13 @@ def cubic_grid(
     xs = torch.linspace(-1, 1, nx, device=device, dtype=dtype)
     ys = torch.linspace(-1, 1, ny, device=device, dtype=dtype)
     zs = torch.linspace(-1, 1, nz, device=device, dtype=dtype)
-
     x, y, z = torch.meshgrid(xs, ys, zs, indexing="ij")
 
-    return torch.stack([x, y, z], dim=-1).view(-1, 3)
+    return torch.stack([x, y, z], dim=stack_dim)
 
 
 def spherical_grid(
-    npts: _ShapeOrInt, device: Optional[Device] = None, dtype: Optional[Dtype] = None
+    npts: ShapeOrInt, device: Optional[Device] = None, dtype: Optional[Dtype] = None
 ) -> Tensor:
 
     nr, nt, np = (npts,) * 3 if isinstance(npts, int) else npts
@@ -94,7 +94,6 @@ def spherical_grid(
     rs = torch.linspace(0, 1, nr + 1, device=device, dtype=dtype)[1:]
     thetas = torch.linspace(0, torch.pi, nt, device=device, dtype=dtype)
     phis = torch.linspace(0, 2 * torch.pi, np, device=device, dtype=dtype)
-
     r, t, p = torch.meshgrid(rs, thetas, phis, indexing="ij")
 
     x = r * torch.sin(t) * torch.cos(p)
