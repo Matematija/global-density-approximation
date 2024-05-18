@@ -115,7 +115,11 @@ class GlobalDensityApprox(nn.Module):
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
 
-        grid = torch.randn(self.n_pts, 3) if self.training else self.grid
+        if self.training:
+            grid = torch.randn(self.n_pts, 3, device=s2.device, dtype=s2.dtype)
+        else:
+            grid = self.grid
+
         anchor_coords = torch.sqrt(s2 + 1e-5).unsqueeze(-2) * grid
 
         phi = self.pooling(wrho, coords, anchor_coords)
