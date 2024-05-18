@@ -8,7 +8,7 @@ from torch import Tensor
 from .pool import GaussianPool
 from .layers import MLP, ProximalAttention, CoordinateEncoding
 from .features import lda, mean_and_covariance
-from .utils import Activation, log_cosh, dist, activation_func, std_scale
+from .utils import Activation, log_cosh, dist, activation_func, std_scale, cubic_grid
 
 
 class FieldEmbedding(nn.Module):
@@ -89,7 +89,7 @@ class GlobalDensityApprox(nn.Module):
         n_blocks: int,
         n_basis: int = 32,
         max_std: float = 1.0,
-        n_pts: int = 512,
+        n_pts: int = 8,
         n_heads: int = None,
         coord_std: float = 1.0,
         enhancement: float = 4.0,
@@ -98,8 +98,7 @@ class GlobalDensityApprox(nn.Module):
 
         super().__init__()
 
-        self.n_pts = n_pts
-        self.register_buffer("grid", torch.randn(n_pts, 3))
+        self.register_buffer("grid", cubic_grid(n_pts).view(-1, 3))
         self.pooling = GaussianPool(n_basis, max_std)
 
         self.field_embed = FieldEmbedding(n_basis, embed_dim, coord_std, enhancement, activation)
@@ -114,13 +113,7 @@ class GlobalDensityApprox(nn.Module):
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
-
-        if self.training:
-            grid = torch.randn(self.n_pts, 3, device=s2.device, dtype=s2.dtype)
-        else:
-            grid = self.grid
-
-        anchor_coords = torch.sqrt(s2 + 1e-5).unsqueeze(-2) * grid
+        anchor_coords = 2 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
 
         phi = self.pooling(wrho, coords, anchor_coords)
         phi = torch.log(phi + 1e-4)
