@@ -71,7 +71,10 @@ _ShapeOrInt = Union[int, Sequence[int]]
 
 
 def cubic_grid(
-    npts: _ShapeOrInt, device: Optional[Device] = None, dtype: Optional[Dtype] = None
+    npts: _ShapeOrInt,
+    stack_dim: int = -1,
+    device: Optional[Device] = None,
+    dtype: Optional[Dtype] = None,
 ) -> Tensor:
 
     nx, ny, nz = (npts,) * 3 if isinstance(npts, int) else npts
@@ -82,7 +85,7 @@ def cubic_grid(
 
     x, y, z = torch.meshgrid(xs, ys, zs, indexing="ij")
 
-    return torch.stack([x, y, z], dim=-1).view(-1, 3)
+    return torch.stack([x, y, z], dim=stack_dim)
 
 
 def spherical_grid(

@@ -1,11 +1,10 @@
 from typing import Optional
 
-import torch
 from torch import nn
 from torch import Tensor
 
-from .layers import MLP, FieldEmbedding, ProximalAttention
-from .utils import Activation, std_scale, dist
+from .layers import MLP, ProximalAttention, FieldEmbedding
+from .utils import Activation, std_scale, dist, activation_func
 
 
 class EncoderBlock(nn.Module):
@@ -44,19 +43,15 @@ class Encoder(nn.Module):
         n_blocks: int,
         n_heads: Optional[int] = None,
         coord_std: float = 0.05,
-        coord_modes: int = 512,
         enhancement: float = 4.0,
         activation: Activation = "silu",
     ):
 
         super().__init__()
 
+        self.embed = FieldEmbedding(n_basis, embed_dim, coord_std, enhancement, activation)
+
         make_block = lambda: EncoderBlock(embed_dim, n_heads, enhancement, activation)
-
-        self.embed = FieldEmbedding(
-            n_basis, embed_dim, coord_modes, coord_std, enhancement, activation
-        )
-
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
         # self.final_norm = nn.LayerNorm(embed_dim)
 

@@ -43,24 +43,19 @@ class MLP(nn.Module):
 
 
 class CoordinateEncoding(nn.Module):
-    def __init__(self, embed_dim: int, init_std: float, n_modes: int, ndim: int = 3):
+    def __init__(self, n_modes: int, init_std: float, ndim: int = 3):
 
         super().__init__()
 
-        assert embed_dim >= 2, "Embedding dimension must be at least 2."
-        assert embed_dim % 2 == 0, "Embedding dimension must be even."
-
+        assert n_modes % 2 == 0, "Number of modes must be even."
         self.n_modes = n_modes
 
-        self.mode_lift = nn.Linear(ndim, n_modes, bias=False)
-        nn.init.normal_(self.mode_lift.weight, std=2 * torch.pi * init_std)
-
-        self.proj = nn.Linear(2 * n_modes, embed_dim, bias=False)
+        self.mode_lift = nn.Linear(ndim, n_modes // 2, bias=False)
+        nn.init.normal_(self.mode_lift.weight, std=1 / init_std)
 
     def forward(self, coords: Tensor) -> Tensor:
         emb = self.mode_lift(coords)
-        x = torch.cat([torch.cos(emb), torch.sin(emb)], dim=-1)
-        return self.proj(x)
+        return torch.cat([torch.cos(emb), torch.sin(emb)], dim=-1)
 
 
 class FieldEmbedding(nn.Module):
@@ -68,7 +63,6 @@ class FieldEmbedding(nn.Module):
         self,
         in_components: int,
         embed_dim: int,
-        n_modes: int,
         init_std: float,
         enhancement: float = 4.0,
         activation: Activation = "silu",
@@ -84,40 +78,20 @@ class FieldEmbedding(nn.Module):
         self.eps = eps
 
         self.field_embed = nn.Linear(in_components, self.width, bias=False)
-        self.coord_embed = CoordinateEncoding(self.width, init_std, n_modes=n_modes)
+
+        self.coord_embed = nn.Sequential(
+            CoordinateEncoding(self.width, init_std),
+            MLP(self.width, 1.0, activation),
+        )
 
         self.proj = nn.Linear(self.width, embed_dim)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
 
-        log_field = torch.log(field + self.eps)
-        field_emb = self.field_embed(log_field)
+        field_emb = self.field_embed(field)
         coord_emb = self.coord_embed(coords)
 
-        x = self.activation(coord_emb) * field_emb
-        return self.proj(x)
-
-
-class InstanceNorm(nn.Module):
-    def __init__(self, embed_dim: int, eps: float = 1e-5):
-
-        super().__init__()
-
-        self.scale = nn.Parameter(torch.ones(embed_dim))
-        self.bias = nn.Parameter(torch.zeros(embed_dim))
-        self.eps = eps
-
-    def forward(self, f: Tensor, weights: Optional[Tensor] = None) -> Tensor:
-
-        if weights is None:
-            mean = f.mean(dim=-2, keepdim=True)
-            var = f.var(dim=-2, keepdim=True)
-        else:
-            mean = torch.einsum("...x,...xi->...i", weights, f).unsqueeze(-2)
-            var = torch.einsum("...x,...xi->...i", weights, (f - mean) ** 2).unsqueeze(-2)
-
-        f_bar = (f - mean) / torch.sqrt(var + self.eps)
-        return f_bar * self.scale + self.bias
+        return self.proj(self.activation(coord_emb) * field_emb)
 
 
 class ProximalAttention(nn.Module):

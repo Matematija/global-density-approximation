@@ -66,8 +66,7 @@ class Decoder(nn.Module):
         embed_dim: int,
         n_blocks: int,
         n_heads: Optional[int] = None,
-        coord_std: float = 0.1,
-        coord_modes: int = 512,
+        coord_std: float = 1.0,
         enhancement: float = 4.0,
         activation: Activation = "silu",
     ):
@@ -76,7 +75,8 @@ class Decoder(nn.Module):
 
         make_block = lambda: DecoderBlock(embed_dim, n_heads, enhancement, activation=activation)
 
-        self.embed = FieldEmbedding(1, embed_dim, coord_modes, coord_std, enhancement, activation)
+        self.embed = FieldEmbedding(1, embed_dim, coord_std, enhancement, activation)
+
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
         self.project = FieldProjection(embed_dim, out_features, activation=activation)
 

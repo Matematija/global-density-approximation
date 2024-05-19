@@ -17,7 +17,7 @@ class GlobalDensityApprox(nn.Module):
         n_encoder_blocks: int,
         n_decoder_blocks: int,
         n_basis: int,
-        max_std: float = 4.0,
+        max_std: float = 2.0,
         grid_size: int = 8,
         n_heads: int = None,
         enhancement: float = 4.0,
@@ -26,7 +26,7 @@ class GlobalDensityApprox(nn.Module):
 
         super().__init__()
 
-        self.register_buffer("grid", cubic_grid(grid_size))
+        self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
         self.pooling = GaussianPool(n_basis, max_std)
 
         self.encoder = Encoder(
@@ -52,10 +52,11 @@ class GlobalDensityApprox(nn.Module):
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
-        anchor_coords = 3 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
+        anchor_coords = 2 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
         distances = dist(coords, anchor_coords)
 
         phi = self.pooling(wrho, coords, anchor_coords)
+        phi = torch.log(phi + 1e-4)
         context = self.encoder(phi, anchor_coords)
 
         return context, distances
