@@ -24,14 +24,14 @@ class DecoderBlock(nn.Module):
         self.attn_norm = nn.LayerNorm(embed_dim)
         self.mlp_norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, phi: Tensor, context: Tensor, distances: Tensor) -> Tensor:
-        attn = self.attention(phi, context, context, distances)
-        phi = self.attn_norm(phi + attn)
-        return self.mlp_norm(phi + self.mlp(phi))
-
     # def forward(self, phi: Tensor, context: Tensor, distances: Tensor) -> Tensor:
-    #     phi = phi + self.attention(self.attn_norm(phi), context, context, distances)
-    #     return phi + self.mlp(self.mlp_norm(phi))
+    #     attn = self.attention(phi, context, context, distances)
+    #     phi = self.attn_norm(phi + attn)
+    #     return self.mlp_norm(phi + self.mlp(phi))
+
+    def forward(self, phi: Tensor, context: Tensor, distances: Tensor) -> Tensor:
+        phi = phi + self.attention(self.attn_norm(phi), context, context, distances)
+        return phi + self.mlp(self.mlp_norm(phi))
 
 
 class FieldProjection(nn.Module):
@@ -47,16 +47,16 @@ class FieldProjection(nn.Module):
 
         self.activation = activation_func(activation)
 
-        # self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim)
         self.mlp = MLP(embed_dim, enhancement, activation=activation)
         self.proj = nn.Linear(embed_dim, out_features)
 
-    def __call__(self, phi: Tensor) -> Tensor:
-        return self.proj(self.activation(self.mlp(phi)))
-
     # def __call__(self, phi: Tensor) -> Tensor:
-    #     h = self.mlp(self.activation(self.norm(phi)))
-    #     return self.proj(self.activation(h))
+    #     return self.proj(self.activation(self.mlp(phi)))
+
+    def __call__(self, phi: Tensor) -> Tensor:
+        h = self.mlp(self.activation(self.norm(phi)))
+        return self.proj(self.activation(h))
 
 
 class Decoder(nn.Module):
@@ -66,7 +66,7 @@ class Decoder(nn.Module):
         embed_dim: int,
         n_blocks: int,
         n_heads: Optional[int] = None,
-        coord_std: float = 1.0,
+        coord_std: float = 0.5,
         enhancement: float = 4.0,
         activation: Activation = "silu",
     ):

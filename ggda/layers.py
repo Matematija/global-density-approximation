@@ -77,21 +77,22 @@ class FieldEmbedding(nn.Module):
         self.width = int(embed_dim * enhancement)
         self.eps = eps
 
-        self.field_embed = nn.Linear(in_components, self.width, bias=False)
+        self.field_embed = nn.Linear(in_components, self.width)
 
         self.coord_embed = nn.Sequential(
-            CoordinateEncoding(self.width, init_std),
-            MLP(self.width, 1.0, activation),
+            CoordinateEncoding(self.width, init_std), nn.Linear(self.width, self.width)
         )
 
+        self.norm = nn.LayerNorm(self.width)
         self.proj = nn.Linear(self.width, embed_dim)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
 
         field_emb = self.field_embed(field)
         coord_emb = self.coord_embed(coords)
+        emb = self.norm(field_emb + coord_emb)
 
-        return self.proj(self.activation(coord_emb) * field_emb)
+        return self.proj(self.activation(emb))
 
 
 class ProximalAttention(nn.Module):
