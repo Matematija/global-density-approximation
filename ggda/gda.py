@@ -5,10 +5,29 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import GaussianPool
-from .layers import MLP, ProximalAttention, CoordinateEncoding
+from einops import repeat
+
+from .layers import MLP, Attention, ProximalAttention, CoordinateEncoding
 from .features import lda, mean_and_covariance
 from .utils import Activation, log_cosh, dist, activation_func, std_scale, cubic_grid
+
+
+class CoordinateEmbedding(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        init_std: float,
+        enhancement: float = 1.0,
+        activation: Activation = "silu",
+    ):
+
+        super().__init__()
+
+        self.encode = CoordinateEncoding(embed_dim, init_std)
+        self.mlp = MLP(embed_dim, enhancement, activation)
+
+    def forward(self, coords: Tensor) -> Tensor:
+        return self.mlp(self.encode(coords))
 
 
 class FieldEmbedding(nn.Module):
@@ -31,16 +50,46 @@ class FieldEmbedding(nn.Module):
         assert self.width % 2 == 0, f"`embed_dim * enhancement` must be even, got {self.width}."
 
         self.field_embed = nn.Linear(in_components, self.width, bias=False)
-        self.coord_embed = CoordinateEncoding(self.width // 2, init_std)
+        self.coord_embed = CoordinateEmbedding(self.width, init_std, activation=activation)
         self.proj = nn.Linear(self.width, embed_dim)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
+
         field_emb = self.field_embed(field)
         coord_emb = self.coord_embed(coords)
-        return self.proj(self.activation(field_emb) * coord_emb)
+        x = self.activation(field_emb) * coord_emb
+
+        return self.proj(x)
 
 
-class TransformerBlock(nn.Module):
+class InterpolationBlock(nn.Module):
+    def __init__(self, embed_dim: int, n_heads: Optional[int] = None):
+
+        super().__init__()
+
+        self.query_norm = nn.LayerNorm(embed_dim)
+        self.key_norm = nn.LayerNorm(embed_dim)
+        self.value_norm = nn.Identity()
+
+        self.attention = Attention(embed_dim, n_heads)
+
+    def forward(self, src: Tensor, tgt: Tensor, weights: Optional[Tensor] = None) -> Tensor:
+
+        query = self.query_norm(tgt)
+        key = self.key_norm(src)
+        value = self.value_norm(src)
+
+        if weights is not None:
+            n_heads, n_tgt = self.attention.n_heads, tgt.size(-2)
+            attn_bias = repeat(torch.log(weights), "... r -> (... h) R r", h=n_heads, R=n_tgt)
+
+        else:
+            attn_bias = None
+
+        return self.attention(query, key, value, attn_mask=attn_bias)
+
+
+class InteractionBlock(nn.Module):
     def __init__(
         self,
         embed_dim: int,
@@ -51,15 +100,16 @@ class TransformerBlock(nn.Module):
 
         super().__init__()
 
-        self.attention = ProximalAttention(embed_dim, n_heads, enhancement)
+        self.attention = ProximalAttention(embed_dim, n_heads)
         self.mlp = MLP(embed_dim, enhancement, activation)
 
         self.attn_norm = nn.LayerNorm(embed_dim)
         self.mlp_norm = nn.LayerNorm(embed_dim)
 
     def forward(self, phi: Tensor, distances: Tensor) -> Tensor:
-        phi = self.attn_norm(phi + self.attention(phi, phi, phi, distances))
-        return self.mlp_norm(phi + self.mlp(phi))
+        y = self.attn_norm(phi)
+        phi = phi + self.attention(y, y, y, distances)
+        return phi + self.mlp_norm(self.mlp(phi))
 
 
 class FieldProjection(nn.Module):
@@ -78,17 +128,14 @@ class FieldProjection(nn.Module):
         self.proj = nn.Linear(embed_dim, out_components)
 
     def forward(self, phi: Tensor) -> Tensor:
-        x = self.mlp(phi).sum(dim=-2)
-        return self.proj(self.norm(x))
+        return self.proj(self.mlp(self.norm(phi)))
 
 
 class GlobalDensityApprox(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        n_blocks: int,
-        n_basis: int = 32,
-        max_std: float = 1.0,
+        n_blocks: int = 1,
         n_pts: int = 8,
         n_heads: int = None,
         coord_std: float = 1.0,
@@ -99,49 +146,45 @@ class GlobalDensityApprox(nn.Module):
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(n_pts).view(-1, 3))
-        self.pooling = GaussianPool(n_basis, max_std)
 
-        self.field_embed = FieldEmbedding(n_basis, embed_dim, coord_std, enhancement, activation)
+        self.grid_coord_embed = CoordinateEmbedding(embed_dim, coord_std, activation=activation)
+        self.field_embed = FieldEmbedding(1, embed_dim, coord_std, enhancement, activation)
 
-        make_block = lambda: TransformerBlock(embed_dim, n_heads, enhancement, activation)
+        self.input_interp_block = InterpolationBlock(embed_dim, n_heads)
+
+        make_block = lambda: InteractionBlock(embed_dim, n_heads, enhancement, activation)
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
 
+        self.output_interp_block = InterpolationBlock(embed_dim, n_heads)
         self.field_proj = FieldProjection(embed_dim, 2, enhancement, activation)
 
-    def pool_density(self, wrho: Tensor, coords: Tensor) -> Tensor:
+    def setup_grid(self, wrho: Tensor, coords: Tensor) -> Tensor:
 
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
         anchor_coords = 2 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
 
-        phi = self.pooling(wrho, coords, anchor_coords)
-        phi = torch.log(phi + 1e-4)
+        return anchor_coords
 
-        return phi, anchor_coords
+    def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
-    def scale_and_bias(self, wrho: Tensor, coords: Tensor) -> Tensor:
+        phi = torch.log(rho + 1e-4).unsqueeze(-1)
+        phi = self.field_embed(phi, coords)
 
-        phi, anchor_coords = self.pool_density(wrho, coords)
-        phi = self.field_embed(phi, anchor_coords)
+        anchor_coords = self.setup_grid(weights * rho, coords)
+        grid_emb = self.grid_coord_embed(anchor_coords)
+
+        phi_grid = self.input_interp_block(phi, grid_emb, weights=weights)
 
         distances = dist(anchor_coords, anchor_coords + 1e-5)
         distances = std_scale(distances)
 
         for block in self.blocks:
-            phi = block(phi, distances)
+            phi_grid = block(phi_grid, distances)
 
-        y = self.field_proj(phi)
-        scale, bias = y.unbind(dim=-1)
+        phi_points = self.output_interp_block(phi_grid, phi)
+        scale, bias = self.field_proj(phi_points).unbind(dim=-1)
         scale, bias = F.softplus(scale), -log_cosh(bias)
 
-        return scale, bias
-
-    def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-
-        wrho = weights * rho
-
-        E_lda = torch.sum(wrho * lda(rho.clip(min=1e-7)), dim=-1)
-        scale, bias = self.scale_and_bias(wrho, coords)
-
-        return scale * E_lda + bias
+        return scale * lda(rho.clip(min=1e-7)) + bias

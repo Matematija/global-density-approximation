@@ -43,13 +43,13 @@ class MLP(nn.Module):
 
 
 class CoordinateEncoding(nn.Module):
-    def __init__(self, n_modes: int, init_std: float, ndim: int = 3):
+    def __init__(self, n_features: int, init_std: float, ndim: int = 3):
 
         super().__init__()
 
-        self.n_modes = n_modes
+        assert n_features % 2 == 0, "Embedding dimension must be even!"
 
-        self.mode_lift = nn.Linear(ndim, n_modes, bias=False)
+        self.mode_lift = nn.Linear(ndim, n_features // 2, bias=False)
         nn.init.normal_(self.mode_lift.weight, std=1 / init_std)
 
     def forward(self, coords: Tensor) -> Tensor:
@@ -104,9 +104,6 @@ class Attention(nn.Module):
             embed_dim, self.n_heads, bias=bias, dropout=False, batch_first=True
         )
 
-    def forward(
-        self, query: Tensor, key: Tensor, value: Tensor, *, kv_mask: Optional[BoolTensor] = None
-    ) -> Tensor:
-        mask = ~kv_mask if kv_mask is not None else None
-        out, _ = self.attention(query, key, value, key_padding_mask=mask, need_weights=False)
+    def forward(self, query: Tensor, key: Tensor, value: Tensor, *args, **kwargs) -> Tensor:
+        out, _ = self.attention(query, key, value, *args, **kwargs, need_weights=False)
         return out
