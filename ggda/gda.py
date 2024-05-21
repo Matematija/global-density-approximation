@@ -183,7 +183,8 @@ class GlobalDensityApprox(nn.Module):
         for block in self.blocks:
             phi_grid = block(phi_grid, distances)
 
-        phi_points = self.output_interp_block(phi_grid, phi)
+        phi_points = phi + self.output_interp_block(phi_grid, phi)
+
         scale, bias = self.field_proj(phi_points).unbind(dim=-1)
         scale, bias = F.softplus(scale), -log_cosh(bias)
 
