@@ -108,43 +108,46 @@ class SphericalVectorPool(nn.Module):
         self.register_buffer("mu", 1 / scales)
 
         r_norms = torch.rsqrt(2 * scales**3)
-
-        a_norms_0 = torch.tensor(_real_ylm_norm(0))
-        a_norms_1 = torch.tensor(_real_ylm_norm(1))
-        # a_norms_2 = torch.tensor(_real_ylm_norm(2))
+        a_norm_0 = torch.tensor(_real_ylm_norm(0)[0])
+        a_norm_1 = torch.tensor(_real_ylm_norm(1)[0])
 
         self.register_buffer("r_norms", r_norms)
-        self.register_buffer("a_norms_0", a_norms_0)
-        self.register_buffer("a_norms_1", a_norms_1)
-        # self.register_buffer("angular_norms_2", a_norms_2)
+        self.register_buffer("a_norm_0", a_norm_0)
+        self.register_buffer("a_norm_1", a_norm_1)
+
+        variables = [f"B = Pm({n_radial_basis})", f"R = Vj(3)", f"r = Vi(3)", "F = Vi(1)"]
+
+        formula_0 = "Exp(-B * Norm2(r - R)) * F"
+        self.conv_fn_0 = Genred(formula_0, aliases=variables, reduction_op="Sum", axis=0)
+
+        formula_11 = "Exp(-B * Norm2(r - R)) * Elem(Normalize(r - R), 0) * F"
+        formula_12 = "Exp(-B * Norm2(r - R)) * Elem(Normalize(r - R), 1) * F"
+        formula_13 = "Exp(-B * Norm2(r - R)) * Elem(Normalize(r - R), 2) * F"
+
+        self.conv_fn_11 = Genred(formula_11, aliases=variables, reduction_op="Sum", axis=0)
+        self.conv_fn_12 = Genred(formula_12, aliases=variables, reduction_op="Sum", axis=0)
+        self.conv_fn_13 = Genred(formula_13, aliases=variables, reduction_op="Sum", axis=0)
 
     def forward(self, f: Tensor, coords: Tensor, out_coords: Optional[Tensor] = None) -> Tensor:
-
-        reduce_dim = f.ndim
 
         if out_coords is None:
             out_coords = coords
 
-        # fmt: off
-        F = LazyTensor(rearrange(f,          "... i   -> ... 1 i 1 1").contiguous())
-        r = LazyTensor(rearrange(coords,     "... i d -> ... 1 i 1 d").contiguous())
-        R = LazyTensor(rearrange(out_coords, "... a d -> ... 1 1 a d").contiguous())
-        m = LazyTensor(rearrange(self.mu,    "      s ->     s 1 1 1").contiguous())
-        # fmt: on
+        if f.ndim == 1 and coords.ndim == 2 and out_coords.ndim == 2:
+            mu = self.mu
+        elif f.ndim == 2 and coords.ndim == 3 and out_coords.ndim == 3:
+            mu = self.mu[None, ...]
+        else:
+            raise ValueError(
+                f"Incompatible shapes: f {f.shape}, coords {coords.shape}, anchor_coords {out_coords.shape}"
+            )
 
-        d = r - R
-        r = (d**2).sum(dim=-1).sqrt()
-
-        # l = 0
-        kernel_0 = (-m * r).exp()
-        norm_0 = self.r_norms[:, None, None] * self.a_norms_0[None, None, :]
-        fconv_0 = (kernel_0 * F).sum_reduction(dim=reduce_dim)
-        fconv_0 = rearrange(fconv_0 * norm_0, "... s a d -> ... a (s d)")
-
-        # l = 1
-        kernel_1 = kernel_0 * (d / r)
-        norm_1 = self.r_norms[:, None, None] * self.a_norms_1[None, None, :]
-        fconv_1 = (kernel_1 * F).sum_reduction(dim=reduce_dim)
-        fconv_1 = rearrange(fconv_1 * norm_1, "... s a d -> ... a (s d)")
-
-        return torch.cat([fconv_0, fconv_1], dim=-1)
+        return torch.cat(
+            [
+                self.conv_fn_0(mu, out_coords, coords, f) * (self.r_norms * self.a_norm_0),
+                self.conv_fn_11(mu, out_coords, coords, f) * (self.r_norms * self.a_norm_1),
+                self.conv_fn_12(mu, out_coords, coords, f) * (self.r_norms * self.a_norm_1),
+                self.conv_fn_13(mu, out_coords, coords, f) * (self.r_norms * self.a_norm_1),
+            ],
+            dim=-1,
+        )

@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch import Tensor, BoolTensor
 
 from einops import rearrange
@@ -83,16 +84,15 @@ class FieldEmbedding(nn.Module):
             CoordinateEncoding(self.width, init_std), nn.Linear(self.width, self.width)
         )
 
-        self.norm = nn.LayerNorm(self.width)
         self.proj = nn.Linear(self.width, embed_dim)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
 
         field_emb = self.field_embed(field)
         coord_emb = self.coord_embed(coords)
-        emb = self.norm(field_emb + coord_emb)
 
-        return self.proj(self.activation(emb))
+        emb = F.tanh(field_emb) * self.activation(coord_emb)
+        return self.proj(emb)
 
 
 class ProximalAttention(nn.Module):
