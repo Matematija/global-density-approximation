@@ -3,7 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import GaussianPool
+from .pool import SphericalVectorPool
 from .encoder import Encoder
 from .decoder import Decoder
 from .features import lda_x, mean_and_covariance
@@ -27,10 +27,10 @@ class GlobalDensityApprox(nn.Module):
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        self.pooling = GaussianPool(n_basis, max_std)
+        self.pooling = SphericalVectorPool(n_basis, max_std)
 
         self.encoder = Encoder(
-            n_basis=n_basis,
+            n_basis=self.pooling.n_basis,
             embed_dim=embed_dim,
             n_blocks=n_encoder_blocks,
             n_heads=n_heads,
@@ -56,7 +56,7 @@ class GlobalDensityApprox(nn.Module):
         distances = dist(coords, anchor_coords)
 
         phi = self.pooling(wrho, coords, anchor_coords)
-        phi = torch.log(phi + 1e-4)
+        phi = torch.log(torch.abs(phi) + 1e-4)
         context = self.encoder(phi, anchor_coords)
 
         return context, distances
