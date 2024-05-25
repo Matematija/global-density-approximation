@@ -24,15 +24,15 @@ class EncoderBlock(nn.Module):
         self.attn_norm = nn.LayerNorm(embed_dim)
         self.mlp_norm = nn.LayerNorm(embed_dim)
 
-    # def forward(self, x: Tensor, distances: Tensor) -> Tensor:
-    #     attn = self.attention(x, x, x, distances)
-    #     x = self.attn_norm(x + attn)
-    #     return self.mlp_norm(x + self.mlp(x))
-
     def forward(self, x: Tensor, distances: Tensor) -> Tensor:
         y = self.attn_norm(x)
         x = x + self.attention(y, y, y, distances)
         return x + self.mlp(self.mlp_norm(x))
+
+    # def forward(self, x: Tensor, distances: Tensor) -> Tensor:
+    #     attn = self.attention(x, x, x, distances)
+    #     x = self.attn_norm(x + attn)
+    #     return self.mlp_norm(x + self.mlp(x))
 
 
 class Encoder(nn.Module):

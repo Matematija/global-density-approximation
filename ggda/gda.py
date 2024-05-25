@@ -3,11 +3,11 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import SphericalVectorPool
+from .pool import HydrogenPool
 from .encoder import Encoder
 from .decoder import Decoder
 from .features import lda_x, mean_and_covariance
-from .utils import Activation, log_cosh, cubic_grid, dist
+from .utils import Activation, log_cosh, cubic_grid
 
 
 class GlobalDensityApprox(nn.Module):
@@ -16,8 +16,8 @@ class GlobalDensityApprox(nn.Module):
         embed_dim: int,
         n_encoder_blocks: int,
         n_decoder_blocks: int,
-        n_basis: int,
-        max_std: float = 2.0,
+        max_n: int,
+        max_std: float = 3.0,
         grid_size: int = 8,
         n_heads: int = None,
         enhancement: float = 4.0,
@@ -27,7 +27,7 @@ class GlobalDensityApprox(nn.Module):
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        self.pooling = SphericalVectorPool(n_basis, max_std)
+        self.pooling = HydrogenPool(max_n, max_std)
 
         self.encoder = Encoder(
             n_basis=self.pooling.n_basis,
@@ -53,22 +53,21 @@ class GlobalDensityApprox(nn.Module):
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
         anchor_coords = 2 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
-        distances = dist(coords, anchor_coords)
 
         phi = self.pooling(wrho, coords, anchor_coords)
         phi = torch.log(torch.abs(phi) + 1e-4)
         context = self.encoder(phi, anchor_coords)
 
-        return context, distances
+        return context
 
-    def decode(self, rho: Tensor, coords: Tensor, context: Tensor, distances: Tensor) -> Tensor:
+    def decode(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
 
-        y = self.decoder(rho, coords, context, distances)
+        y = self.decoder(rho, coords, context)
         scale, bias = y.unbind(dim=-1)
         scale, bias = F.softplus(scale), -log_cosh(bias)
 
         return scale * lda_x(rho.clip(min=1e-7)) + bias
 
     def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-        context, distances = self.encode(weights * rho, coords)
-        return self.decode(rho, coords, context, distances)
+        context = self.encode(weights * rho, coords)
+        return self.decode(rho, coords, context)
