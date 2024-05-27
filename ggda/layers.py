@@ -67,32 +67,23 @@ class FieldEmbedding(nn.Module):
         init_std: float,
         enhancement: float = 4.0,
         activation: Activation = "silu",
-        eps: float = 1e-4,
     ):
 
         super().__init__()
 
         assert embed_dim % 2 == 0, "Embedding dimension must be even."
 
-        self.activation = activation_func(activation)
-        self.width = int(embed_dim * enhancement)
-        self.eps = eps
-
-        self.field_embed = nn.Linear(in_components, self.width)
-
-        self.coord_embed = nn.Sequential(
-            CoordinateEncoding(self.width, init_std), nn.Linear(self.width, self.width)
-        )
-
-        self.proj = nn.Linear(self.width, embed_dim)
+        self.field_embed = nn.Sequential(nn.Linear(in_components, embed_dim // 2), nn.Tanh())
+        self.coord_embed = CoordinateEncoding(embed_dim // 2, init_std)
+        self.mlp = MLP(embed_dim, enhancement, activation)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
 
         field_emb = self.field_embed(field)
         coord_emb = self.coord_embed(coords)
 
-        emb = F.tanh(field_emb) * self.activation(coord_emb)
-        return self.proj(emb)
+        x = torch.cat([field_emb, coord_emb], dim=-1)
+        return self.mlp(x)
 
 
 class ProximalAttention(nn.Module):
