@@ -1,9 +1,11 @@
+from typing import Optional
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import HydrogenPool
+from .pool import WeightedGaussianPool
 from .encoder import Encoder
 from .decoder import Decoder
 from .features import lda_x, mean_and_covariance
@@ -16,8 +18,8 @@ class GlobalDensityApprox(nn.Module):
         embed_dim: int,
         n_encoder_blocks: int,
         n_decoder_blocks: int,
-        max_n: int,
-        max_std: float = 3.0,
+        n_basis: Optional[int] = None,
+        basis_cutoff: float = 4.0,
         grid_size: int = 8,
         n_heads: int = None,
         enhancement: float = 4.0,
@@ -27,7 +29,7 @@ class GlobalDensityApprox(nn.Module):
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        self.pooling = HydrogenPool(max_n, max_std)
+        self.pooling = WeightedGaussianPool(n_basis or embed_dim, basis_cutoff)
 
         self.encoder = Encoder(
             n_basis=self.pooling.n_basis,
@@ -52,10 +54,10 @@ class GlobalDensityApprox(nn.Module):
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
-        anchor_coords = 2 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
+        anchor_coords = 3 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
 
         phi = self.pooling(wrho, coords, anchor_coords)
-        phi = torch.log(torch.abs(phi) + 1e-4)
+        phi = torch.log(phi + 1e-4)
         context = self.encoder(phi, anchor_coords)
 
         return context

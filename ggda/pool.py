@@ -1,5 +1,6 @@
 from typing import Optional
 from math import sqrt, pi
+from functools import partial
 
 import numpy as np
 
@@ -46,6 +47,66 @@ class GaussianPool(nn.Module):
             )
 
         return fconv / self.norms
+
+
+class WeightedGaussianPool(nn.Module):
+    def __init__(self, n_basis: int, cutoff: float, scale: float = 1.0, ndim: int = 3):
+
+        super().__init__()
+
+        self.n_basis = n_basis
+        self.cutoff = cutoff
+
+        means = torch.linspace(0, cutoff, n_basis) / cutoff
+        self.register_buffer("means", means)
+
+        self.register_buffer("beta", torch.tensor((scale * self.n_basis) ** 2))
+        self.register_buffer("pi_half", torch.tensor(pi / 2))
+
+        formula = (
+            "Cos(C * Norm2(R - r)) * Step(1 - Norm2(R - r)) * Exp(-B * Square(Norm2(R -r) - M)) * F"
+        )
+
+        variables = [
+            "C = Pm(1)",
+            "B = Pm(1)",
+            f"M = Pm({n_basis})",
+            f"R = Vi({ndim})",
+            f"r = Vj({ndim})",
+            "F = Vj(1)",
+        ]
+
+        self._conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
+
+    def conv_fn(self, f: Tensor, coords: Tensor, out_coords: Tensor, *args, **kwargs) -> Tensor:
+
+        if f.ndim == 1 and coords.ndim == 2 and out_coords.ndim == 2:
+            pi_half, beta, means = self.pi_half, self.beta, self.means
+
+        elif f.ndim == 2 and coords.ndim == 3 and out_coords.ndim == 3:
+
+            pi_half = self.pi_half.unsqueeze(0)
+            beta = self.beta.unsqueeze(0)
+            means = self.means.unsqueeze(0)
+
+        else:
+            raise ValueError(
+                f"Incompatible shapes: f {f.shape}, coords {coords.shape}, anchor_coords {out_coords.shape}"
+            )
+
+        return self._conv_fn(pi_half, beta, means, out_coords, coords, f, *args, **kwargs)
+
+    def forward(
+        self, f: Tensor, coords: Tensor, out_coords: Optional[Tensor] = None, *args, **kwargs
+    ) -> Tensor:
+
+        if out_coords is None:
+            out_coords = coords
+
+        coords = coords / self.cutoff
+        out_coords = out_coords / self.cutoff
+
+        return self.conv_fn(f, coords, out_coords, *args, **kwargs)
 
 
 class ExponentialPool(nn.Module):
