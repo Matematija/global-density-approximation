@@ -1,31 +1,16 @@
-from typing import Any, NamedTuple
-
 from warnings import warn
-
-import numpy as np
 
 import torch
 from torch import autograd
-from torch import Tensor
 
 from pyscf import gto, dft
 from pyscf.dft.numint import NumInt
-from pyscf.gto.eval_gto import BLKSIZE
 
 from .gda import GlobalDensityApprox
 
 Molecule = gto.mole.Mole
 KohnShamDFT = dft.RKS
 Grid = dft.gen_grid.Grids
-
-
-class CachedGrid(NamedTuple):
-
-    coords: Tensor
-    weights: Tensor
-
-    def __len__(self):
-        return len(self.weights)
 
 
 class GDANumInt(NumInt):
@@ -43,128 +28,36 @@ class GDANumInt(NumInt):
 
         self.gda.zero_grad()
 
-        self._grid = None
-
-    def _xc_type(self, *_, **__):
-        return "LDA"
-
-    def cache_grid(self, grids: Grid):
-
-        coords, weights = grids.coords, grids.weights
-        coords_ = torch.tensor(coords, device=self.device, dtype=torch.float32)
-        weights_ = torch.tensor(weights, device=self.device, dtype=torch.float32)
-
-        self._grid = CachedGrid(coords_, weights_)
-
-    def block_loop(
-        self,
-        mol: Molecule,
-        grids: Grid,
-        nao=None,
-        deriv=0,
-        max_memory=2000,
-        non0tab=None,
-        blksize=None,
-        buf=None,
+    def nr_rks(
+        self, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None
     ):
 
-        npts = len(grids.weights)
-        blksize = (npts // BLKSIZE + 1) * BLKSIZE
+        del xc_code, relativity, hermi, max_memory, verbose
 
-        if self._grid is None or len(self._grid) != npts:
-            self.cache_grid(grids)
+        if grids.coords is None:
+            grids.build(with_non0tab=True)
 
-        return super().block_loop(
-            mol=mol,
-            grids=grids,
-            nao=nao,
-            deriv=deriv,
-            max_memory=max_memory,
-            non0tab=non0tab,
-            blksize=blksize,
-            buf=buf,
-        )
+        ao_vals = self.eval_ao(mol, grids.coords, deriv=0, cutoff=grids.cutoff)
 
-    def eval_exc(self, rho: Tensor, spin: int = 0) -> Tensor:
+        coords = torch.tensor(grids.coords, device=self.device, dtype=torch.float32)
+        weights = torch.tensor(grids.weights, device=self.device, dtype=torch.float32)
+        ao = torch.tensor(ao_vals, device=self.device, dtype=torch.float32)
+        dm = torch.tensor(dms, device=self.device, dtype=torch.float32, requires_grad=True)
 
-        coords, weights = self._grid
+        rho = torch.einsum("mn,xm,xn->x", dm, ao, ao)
+        wrho = weights * rho
 
-        if spin == 0:
-            exc = self.gda.predict(rho, coords, weights)
+        Exc = wrho @ self.gda(rho, coords, weights)
+        (X,) = autograd.grad(Exc, dm, grad_outputs=torch.ones_like(Exc))
 
-        else:
-            rho_a, rho_b = rho.unbind(dim=0)
-            exc_a = self.gda.predict(2 * rho_a, coords, weights)
-            exc_b = self.gda.predict(2 * rho_b, coords, weights)
-            exc = (exc_a + exc_b) / 2
+        with torch.no_grad():
+            N = torch.sum(wrho)
 
-        return exc
+        nelec = N.detach().item()
+        excsum = Exc.detach().item()
+        vmat = X.detach().cpu().numpy()
 
-    def eval_vxc(
-        self, rho: Tensor, exc: Tensor, spin: int = 0, *, create_graph: bool = False
-    ) -> Tensor:
+        return nelec, excsum, vmat
 
-        if spin == 0:
-            (vrho,) = autograd.grad(rho @ exc, rho, create_graph=create_graph)
-
-        else:
-            rho_a, rho_b = torch.unbind(rho, dim=0)
-
-            (vrho_a,) = autograd.grad(rho_a @ exc, rho_a, create_graph=create_graph)
-            (vrho_b,) = autograd.grad(rho_b @ exc, rho_b, create_graph=create_graph)
-
-            vrho = torch.stack([vrho_a, vrho_b], dim=0)
-
-        return vrho
-
-    def eval_fxc(
-        self, rho: Tensor, vrho: Tensor, spin: int = 0, *, create_graph: bool = False
-    ) -> Tensor:
-
-        raise NotImplementedError("Second functional derivative not implemented.")
-
-    def eval_kxc(
-        self, rho: Tensor, v2rho: Tensor, spin: int = 0, *, create_graph: bool = False
-    ) -> Tensor:
-
-        raise NotImplementedError("Third functional derivative not implemented.")
-
-    @staticmethod
-    def to_numpy(t: Tensor) -> np.ndarray:
-        return t.detach().cpu().numpy().astype(np.float64)
-
-    def eval_xc(
-        self,
-        xc_code: str,
-        rho: np.ndarray,
-        spin: int = 0,
-        relativity: int = 0,
-        deriv: int = 1,
-        omega: Any = None,
-        verbose: int = None,
-    ):
-
-        del xc_code, relativity, omega, verbose
-
-        assert deriv < 4, f"Invalid derivative order: {deriv}!"
-
-        rho = torch.tensor(rho, requires_grad=deriv >= 1, device=self.device, dtype=torch.float32)
-
-        exc_ = self.eval_exc(rho, spin=spin)
-        exc = self.to_numpy(exc_)
-
-        vxc, fxc, kxc = None, None, None
-
-        if deriv >= 1:
-            vrho = self.eval_vxc(rho, exc_, spin=spin, create_graph=deriv >= 2)
-            vxc = (self.to_numpy(vrho),)
-
-        if deriv >= 2:
-            v2rho = self.eval_fxc(rho, vrho, spin=spin, create_graph=deriv >= 3)
-            fxc = (self.to_numpy(v2rho),)
-
-        if deriv >= 3:
-            v3rho = self.eval_kxc(rho, v2rho, spin=spin, create_graph=deriv >= 4)
-            kxc = (self.to_numpy(v3rho),)
-
-        return exc, vxc, fxc, kxc
+    def nr_uks(self, *args, **kwargs):
+        raise NotImplementedError("Unrestricted DFT is not implemented yet for GDA functionals.")
