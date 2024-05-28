@@ -61,7 +61,7 @@ class WeightedGaussianPool(nn.Module):
         self.register_buffer("means", means)
 
         self.register_buffer("beta", torch.tensor((scale * self.n_basis) ** 2))
-        self.register_buffer("pi_half", torch.tensor(pi / 2))
+        self.register_buffer("pi_half", torch.tensor(torch.pi / 2))
 
         formula = (
             "Cos(C * Norm2(R - r)) * Step(1 - Norm2(R - r)) * Exp(-B * Square(Norm2(R -r) - M)) * F"
@@ -80,19 +80,10 @@ class WeightedGaussianPool(nn.Module):
 
     def conv_fn(self, f: Tensor, coords: Tensor, out_coords: Tensor, *args, **kwargs) -> Tensor:
 
-        if f.ndim == 1 and coords.ndim == 2 and out_coords.ndim == 2:
-            pi_half, beta, means = self.pi_half, self.beta, self.means
-
-        elif f.ndim == 2 and coords.ndim == 3 and out_coords.ndim == 3:
-
-            pi_half = self.pi_half.unsqueeze(0)
-            beta = self.beta.unsqueeze(0)
-            means = self.means.unsqueeze(0)
-
-        else:
-            raise ValueError(
-                f"Incompatible shapes: f {f.shape}, coords {coords.shape}, anchor_coords {out_coords.shape}"
-            )
+        batch_dims = f.shape[:-1]
+        pi_half = torch.broadcast_to(self.pi_half, batch_dims + (1,))
+        beta = torch.broadcast_to(self.beta, batch_dims + (1,))
+        means = torch.broadcast_to(self.means, batch_dims + (self.n_basis,))
 
         return self._conv_fn(pi_half, beta, means, out_coords, coords, f, *args, **kwargs)
 
