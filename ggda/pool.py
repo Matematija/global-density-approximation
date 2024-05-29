@@ -54,7 +54,7 @@ class CiderFeatures(nn.Module):
         self.params = nn.Parameter(2 * torch.ones(2))
 
         formula = "Exp(- (a+b) * SqDist(R,r) ) * F"
-        variables = ["a = Pm(1)", "b = Pm(3)", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
+        variables = ["a = Vj(1)", "b = Vj(3)", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
         self.conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
 
     def forward(
@@ -67,6 +67,8 @@ class CiderFeatures(nn.Module):
         *args,
         **kwargs,
     ) -> Tensor:
+
+        # convention: gamma = ( \nabla n ) ^2
 
         if out_coords is None:
             out_coords = coords
@@ -82,7 +84,7 @@ class CiderFeatures(nn.Module):
         Cs = torch.stack([C0, C1, C2, C3], dim=-1)
 
         rho_, gamma_ = rho.unsqueeze(-1), gamma.unsqueeze(-1)
-        ab = torch.pi * (rho_ / 2) ** (2 / 3) * (Bs + Cs * gamma_**2 / (8 * rho_ * ttf(rho_)))
+        ab = torch.pi * (rho_ / 2) ** (2 / 3) * (Bs + Cs * gamma_ / (8 * rho_ * ttf(rho_)))
         ab = torch.broadcast_to(ab, coords.shape[:-1] + (4,))
         a, b = torch.split(ab, [1, 3], dim=-1)
 
