@@ -60,6 +60,10 @@ def lda(rho: Tensor) -> Tensor:
     return lda_x(rho) + lda_c(rho)
 
 
+def gga_reduced_grad(rho: Tensor, grad_rho_norm: Tensor) -> Tensor:
+    return grad_rho_norm**2 / (2 * (3 * torch.pi) ** (1 / 3) * rho ** (4 / 3))
+
+
 def dipole_moment(wrho: Tensor, coords: Tensor, norm: Optional[Tensor] = None) -> Tensor:
 
     if norm is not None:

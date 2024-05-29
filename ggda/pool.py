@@ -4,6 +4,8 @@ import torch
 from torch import nn
 from torch import Tensor
 
+from .features import ttf
+
 import pykeops
 from pykeops.torch import Genred
 
@@ -43,117 +45,48 @@ class GaussianPool(nn.Module):
         return fconv / self.norms
 
 
-class WeightedGaussianPool(nn.Module):
-    def __init__(self, n_basis: int, cutoff: float, scale: float = 1.0, ndim: int = 3):
+class CiderFeatures(nn.Module):
+    def __init__(self, ndim: int = 3):
 
         super().__init__()
 
-        self.n_basis = n_basis
-        self.cutoff = cutoff
+        self.ndim = ndim
+        self.params = nn.Parameter(2 * torch.ones(2))
 
-        means = torch.linspace(0, cutoff, n_basis) / cutoff
-        self.register_buffer("means", means)
-
-        self.register_buffer("beta", torch.tensor((scale * self.n_basis) ** 2))
-        self.register_buffer("pi_half", torch.tensor(torch.pi / 2))
-
-        formula = (
-            "Cos(C * Norm2(R - r)) * Step(1 - Norm2(R - r)) * Exp(-B * Square(Norm2(R -r) - M)) * F"
-        )
-
-        variables = [
-            "C = Pm(1)",
-            "B = Pm(1)",
-            f"M = Pm({n_basis})",
-            f"R = Vi({ndim})",
-            f"r = Vj({ndim})",
-            "F = Vj(1)",
-        ]
-
-        self._conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
-
-    def conv_fn(self, f: Tensor, coords: Tensor, out_coords: Tensor, *args, **kwargs) -> Tensor:
-
-        batch_dims = f.shape[:-1]
-        pi_half = torch.broadcast_to(self.pi_half, batch_dims + (1,))
-        beta = torch.broadcast_to(self.beta, batch_dims + (1,))
-        means = torch.broadcast_to(self.means, batch_dims + (self.n_basis,))
-
-        return self._conv_fn(pi_half, beta, means, out_coords, coords, f, *args, **kwargs)
-
-    def forward(
-        self, f: Tensor, coords: Tensor, out_coords: Optional[Tensor] = None, *args, **kwargs
-    ) -> Tensor:
-
-        if out_coords is None:
-            out_coords = coords
-
-        coords = coords / self.cutoff
-        out_coords = out_coords / self.cutoff
-
-        return self.conv_fn(f, coords, out_coords, *args, **kwargs)
-
-
-class WeightedGaussianPotential(nn.Module):
-    def __init__(self, n_basis: int, cutoff: float, scale: float = 1.0, ndim: int = 3):
-
-        super().__init__()
-
-        self.n_basis = n_basis
-        self.cutoff = cutoff
-
-        self.means = nn.Parameter(torch.linspace(0, 1, n_basis))
-        self.betas = nn.Parameter(torch.full((n_basis,), scale * self.n_basis))
-
-        formula = "(Exp(-B * Square(Norm2(R-r) - M)) / Norm2(R-r)) * F"
-
-        variables = [
-            f"B = Pm({n_basis})",
-            f"M = Pm({n_basis})",
-            f"R = Vi({ndim})",
-            f"r = Vj({ndim})",
-            "F = Vj(1)",
-        ]
-
-        self._conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
-
-    def forward(
-        self, f: Tensor, coords: Tensor, out_coords: Optional[Tensor] = None, *args, **kwargs
-    ) -> Tensor:
-
-        if out_coords is None:
-            out_coords = coords
-
-        batch_dims = f.shape[:-1]
-        betas = torch.broadcast_to(self.betas**2, batch_dims + (self.n_basis,))
-        means = torch.broadcast_to(self.means, batch_dims + (self.n_basis,))
-
-        coords = coords / self.cutoff
-        out_coords = out_coords / self.cutoff
-
-        return self._conv_fn(betas, means, out_coords, coords, f, *args, **kwargs)
-
-
-class ExponentialPool(nn.Module):
-    def __init__(self, n_basis: int, max_scale: float):
-
-        super().__init__()
-
-        self.n_basis = n_basis
-        self.max_scale = max_scale
-
-        scales = torch.linspace(0, max_scale, n_basis + 1)[1:]
-        self.register_buffer("mu", 1 / scales)
-
-        norms = 8 * torch.pi * scales**3
-        self.register_buffer("norms", norms)
-
-        formula = "Exp(-B * Norm2(X-Y)) * F"
-        variables = [f"B = Pm({n_basis})", f"X = Vi(3)", f"Y = Vj(3)", "F = Vj(1)"]
-
+        formula = "Exp(- (a+b) * SqDist(R,r) ) * F"
+        variables = ["a = Pm(1)", "b = Pm(3)", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
         self.conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
 
-    def forward(self, f: Tensor, coords: Tensor, anchor_coords: Tensor, *args, **kwargs) -> Tensor:
-        mu = torch.broadcast_to(self.mu, f.shape[:-1] + (self.n_basis,))
-        fconv = self.conv_fn(mu, anchor_coords, coords, f, *args, **kwargs)
-        return fconv / self.norms
+    def forward(
+        self,
+        rho: Tensor,
+        gamma: Tensor,
+        coords: Tensor,
+        weights: Tensor,
+        out_coords: Optional[Tensor] = None,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+
+        if out_coords is None:
+            out_coords = coords
+
+        A, D = self.params
+
+        B2, C2 = A, (6 * torch.pi**2) ** (2 / 3) * (6 * A / (160 * torch.pi))
+        B1, C1 = B2 / 2, C2 / 2
+        B3, C3 = 2 * B2, 2 * C2
+        B0, C0 = (D / A) * B2, (D / A) * C2
+
+        Bs = torch.stack([B0, B1, B2, B3], dim=-1)
+        Cs = torch.stack([C0, C1, C2, C3], dim=-1)
+
+        rho_, gamma_ = rho.unsqueeze(-1), gamma.unsqueeze(-1)
+        ab = torch.pi * (rho_ / 2) ** (2 / 3) * (Bs + Cs * gamma_**2 / (8 * rho_ * ttf(rho_)))
+        ab = torch.broadcast_to(ab, coords.shape[:-1] + (4,))
+        a, b = torch.split(ab, [1, 3], dim=-1)
+
+        norms = ((Bs[..., 0] + Bs[..., 1:]) / 2) ** (self.ndim / 2)
+        G = self.conv_fn(a, b, out_coords, coords, weights * rho, *args, **kwargs) * norms
+
+        return (G / (2 + G)) - 0.5
