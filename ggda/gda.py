@@ -58,9 +58,8 @@ class GlobalDensityApprox(nn.Module):
 
         phi = self.pooling(wrho, coords, anchor_coords)
         phi = torch.log(phi + 1e-4)
-        context = self.encoder(phi, anchor_coords)
 
-        return context
+        return self.encoder(phi, anchor_coords)
 
     def decode(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
 
