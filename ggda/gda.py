@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import WeightedGaussianPool
+from .pool import WeightedGaussianPotential
 from .encoder import Encoder
 from .decoder import Decoder
 from .features import lda_x, mean_and_covariance
@@ -29,7 +29,7 @@ class GlobalDensityApprox(nn.Module):
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        self.pooling = WeightedGaussianPool(n_basis or embed_dim, basis_cutoff)
+        self.pooling = WeightedGaussianPotential(n_basis or embed_dim, basis_cutoff)
 
         self.encoder = Encoder(
             n_basis=self.pooling.n_basis,
