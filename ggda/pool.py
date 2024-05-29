@@ -108,7 +108,7 @@ class WeightedGaussianPotential(nn.Module):
         formula = "(Exp(-B * Square(Norm2(R-r) - M)) / Norm2(R-r)) * F"
 
         variables = [
-            "B = Pm(1)",
+            f"B = Pm({n_basis})",
             f"M = Pm({n_basis})",
             f"R = Vi({ndim})",
             f"r = Vj({ndim})",
