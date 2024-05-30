@@ -75,6 +75,8 @@ class RangedCoulombPool(nn.Module):
             lambda x: f"IfElse({x}, (1 - Exp(-2*{x})) / (1 + Exp(-2*{x})), (Exp(2*{x}) - 1) / (Exp(2*{x}) + 1))"
         )
 
+        # tanh_keops = lambda x: f"(Exp({x}) - Exp(-{x})) / (Exp({x}) + Exp(-{x}))"
+
         formula = f"( {tanh_keops('S * Norm2(R -r)')} / Norm2(R - r) ) * F"
 
         variables = [f"S = Pm({n_basis})", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
