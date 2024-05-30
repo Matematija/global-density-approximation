@@ -5,10 +5,10 @@ from torch import nn
 from torch.nn import functional as F
 from torch import Tensor
 
-from .pool import WeightedGaussianPool
+from .pool import RangedCoulombPool
 from .encoder import Encoder
 from .decoder import Decoder
-from .features import lda_x, mean_and_covariance
+from .features import lda, mean_and_covariance
 from .utils import Activation, log_cosh, cubic_grid
 
 
@@ -29,7 +29,8 @@ class GlobalDensityApprox(nn.Module):
         super().__init__()
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        self.pooling = WeightedGaussianPool(n_basis or embed_dim, basis_cutoff)
+
+        self.pooling = RangedCoulombPool(n_basis or embed_dim, basis_cutoff)
 
         self.encoder = Encoder(
             n_basis=self.pooling.n_basis,
@@ -49,27 +50,28 @@ class GlobalDensityApprox(nn.Module):
             activation=activation,
         )
 
-    def encode(self, wrho: Tensor, coords: Tensor) -> Tensor:
+    def setup_grid(self, wrho: Tensor, coords: Tensor) -> Tensor:
 
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
+
         coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
         anchor_coords = 3 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
 
-        phi = self.pooling(wrho, coords, anchor_coords)
-        phi = torch.log(phi + 1e-4)
-        context = self.encoder(phi, anchor_coords)
-
-        return context
-
-    def decode(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
-
-        y = self.decoder(rho, coords, context)
-        scale, bias = y.unbind(dim=-1)
-        scale, bias = F.softplus(scale), -log_cosh(bias)
-
-        return scale * lda_x(rho.clip(min=1e-7)) + bias
+        return coords, anchor_coords
 
     def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-        context = self.encode(weights * rho, coords)
-        return self.decode(rho, coords, context)
+
+        wrho = weights * rho
+
+        coords, anchor_coords = self.setup_grid(wrho, coords)
+        phi = self.pooling(wrho, coords, anchor_coords)
+
+        context = self.encoder(phi, anchor_coords)
+        y = self.decoder(rho, coords, context)
+
+        scale, bias = y.unbind(dim=-1)
+        scale, bias = F.softplus(scale), -log_cosh(bias)
+        lda_val = lda(rho.clip(min=1e-7))
+
+        return scale * lda_val + bias

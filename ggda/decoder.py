@@ -1,10 +1,11 @@
 from typing import Optional
 
+import torch
 from torch import nn
 from torch import Tensor
 
-from .layers import MLP, FieldEmbedding, Attention
-from .utils import Activation, activation_func, std_scale
+from .layers import MLP, Attention, FieldEmbedding
+from .utils import Activation, activation_func
 
 
 class DecoderBlock(nn.Module):
@@ -28,15 +29,6 @@ class DecoderBlock(nn.Module):
         phi = phi + self.attention(self.attn_norm(phi), context, context)
         return phi + self.mlp(self.mlp_norm(phi))
 
-    # def forward(self, phi: Tensor, context: Tensor, distances: Tensor) -> Tensor:
-    #     attn = self.attention(phi, context, context, distances)
-    #     phi = self.attn_norm(phi + attn)
-    #     return self.mlp_norm(phi + self.mlp(phi))
-
-    # def forward(self, phi: Tensor, context: Tensor, distances: Tensor) -> Tensor:
-    #     phi = phi + self.attention(self.attn_norm(phi), context, context, distances)
-    #     return phi + self.mlp(self.mlp_norm(phi))
-
 
 class FieldProjection(nn.Module):
     def __init__(
@@ -55,11 +47,8 @@ class FieldProjection(nn.Module):
         self.mlp = MLP(embed_dim, enhancement, activation=activation)
         self.proj = nn.Linear(embed_dim, out_features)
 
-    # def __call__(self, phi: Tensor) -> Tensor:
-    #     return self.proj(self.activation(self.mlp(phi)))
-
     def __call__(self, phi: Tensor) -> Tensor:
-        h = self.mlp(self.activation(self.norm(phi)))
+        h = self.mlp(self.norm(phi))
         return self.proj(self.activation(h))
 
 
@@ -86,19 +75,10 @@ class Decoder(nn.Module):
 
     def forward(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
 
-        phi = self.embed(rho.unsqueeze(-1), coords)
+        f = torch.log(rho + 1e-4).unsqueeze(-1)
+        phi = self.embed(f, coords)
 
         for block in self.blocks:
             phi = block(phi, context)
 
         return self.project(phi)
-
-    # def forward(self, rho: Tensor, coords: Tensor, context: Tensor, distances: Tensor) -> Tensor:
-
-    #     phi = self.embed(rho.unsqueeze(-1), coords)
-    #     distances = std_scale(distances, eps=1e-5)
-
-    #     for block in self.blocks:
-    #         phi = block(phi, context, distances)
-
-    #     return self.project(phi)

@@ -2,7 +2,6 @@ from typing import Optional
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 from torch import Tensor, BoolTensor
 
 from einops import rearrange
@@ -64,32 +63,32 @@ class FieldEmbedding(nn.Module):
         self,
         in_components: int,
         embed_dim: int,
-        init_std: float,
+        coord_std: float,
         enhancement: float = 4.0,
         activation: Activation = "silu",
     ):
 
         super().__init__()
 
-        assert embed_dim % 2 == 0, "Embedding dimension must be even."
+        width = int(enhancement * embed_dim)
+        self.activation = activation_func(activation)
 
-        width = int(embed_dim * enhancement)
-
-        self.field_embed = nn.Linear(in_components, embed_dim // 2)
+        self.feature_embed = nn.Linear(in_components, width)
 
         self.coord_embed = nn.Sequential(
-            CoordinateEncoding(width, init_std), nn.Linear(width, embed_dim // 2)
+            CoordinateEncoding(embed_dim, coord_std), nn.Linear(embed_dim, width)
         )
 
-        self.mlp = MLP(embed_dim, enhancement, activation)
+        self.proj = nn.Linear(width, embed_dim)
 
     def forward(self, field: Tensor, coords: Tensor) -> Tensor:
 
-        field_emb = self.field_embed(field)
+        field_emb = self.feature_embed(field)
         coord_emb = self.coord_embed(coords)
-        x = torch.cat([field_emb, coord_emb], dim=-1)
 
-        return self.mlp(x)
+        x = field_emb * self.activation(coord_emb)
+
+        return self.proj(x)
 
 
 class ProximalAttention(nn.Module):
