@@ -4,8 +4,35 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .layers import MLP, Attention, FieldEmbedding
+from .layers import MLP, Attention, CoordinateEncoding
 from .utils import Activation, activation_func
+
+
+class DensityEmbedding(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        coord_std: float,
+        enhancement: float = 4.0,
+        activation: Activation = "silu",
+    ):
+
+        super().__init__()
+
+        width = int(enhancement * embed_dim)
+
+        self.feature_embed = nn.Sequential(
+            nn.Linear(1, width, bias=False), nn.Tanh(), nn.Linear(width, embed_dim)
+        )
+
+        self.coord_embed = nn.Sequential(
+            CoordinateEncoding(embed_dim, coord_std),
+            MLP(embed_dim, enhancement, activation=activation),
+        )
+
+    def forward(self, rho: Tensor, coords: Tensor) -> Tensor:
+        phi = torch.log(rho + 1e-4).unsqueeze(-1)
+        return self.feature_embed(phi) + self.coord_embed(coords)
 
 
 class DecoderBlock(nn.Module):
@@ -68,15 +95,13 @@ class Decoder(nn.Module):
 
         make_block = lambda: DecoderBlock(embed_dim, n_heads, enhancement, activation=activation)
 
-        self.embed = FieldEmbedding(1, embed_dim, coord_std, enhancement, activation)
-
+        self.embed = DensityEmbedding(embed_dim, coord_std, enhancement, activation)
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
         self.project = FieldProjection(embed_dim, out_features, activation=activation)
 
     def forward(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
 
-        f = torch.log(rho + 1e-4).unsqueeze(-1)
-        phi = self.embed(f, coords)
+        phi = self.embed(rho, coords)
 
         for block in self.blocks:
             phi = block(phi, context)

@@ -64,19 +64,22 @@ class WeightedGaussianPool(nn.Module):
 
 
 class RangedCoulombPool(nn.Module):
-    def __init__(self, n_basis: int, scale: float, ndim: int = 3):
+    def __init__(self, n_basis: int, length_scale: float, ndim: int = 3):
 
         super().__init__()
 
         self.n_basis = n_basis
-        self.scales = nn.Parameter(torch.linspace(0, scale, n_basis + 1)[1:])
 
-        tanh_keops = (
-            lambda x: f"IfElse({x}, (1 - Exp(-2*{x})) / (1 + Exp(-2*{x})), (Exp(2*{x}) - 1) / (Exp(2*{x}) + 1))"
-        )
+        kmax = 2 * torch.pi / length_scale
+        self.k = nn.Parameter(torch.linspace(0, kmax, n_basis))
 
-        formula = f"( {tanh_keops('S * Norm2(R -r)')} / Norm2(R - r) ) * F"
+        # tanh_keops = (
+        #     lambda x: f"IfElse({x}, (1 - Exp(-2*{x})) / (1 + Exp(-2*{x})), (Exp(2*{x}) - 1) / (Exp(2*{x}) + 1))"
+        # )
 
+        # formula = f"( {tanh_keops('S * Norm2(R -r)')} / Norm2(R - r) ) * F"
+
+        formula = "SinXDivX(S * Norm2(R - r)) * F"
         variables = [f"S = Pm({n_basis})", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
         self.conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
 
@@ -87,5 +90,5 @@ class RangedCoulombPool(nn.Module):
         if out_coords is None:
             out_coords = coords
 
-        omega = torch.broadcast_to(log_cosh(self.scales), coords.shape[:-1] + (self.n_basis,))
-        return self.conv_fn(omega, out_coords, coords, f, *args, **kwargs)
+        k_ = torch.broadcast_to(self.k, f.shape[:-1] + (self.n_basis,))
+        return self.conv_fn(k_, out_coords, coords, f, *args, **kwargs) * self.k

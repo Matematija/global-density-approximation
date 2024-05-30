@@ -58,39 +58,6 @@ class CoordinateEncoding(nn.Module):
         return torch.cat([torch.cos(emb), torch.sin(emb)], dim=-1)
 
 
-class FieldEmbedding(nn.Module):
-    def __init__(
-        self,
-        in_components: int,
-        embed_dim: int,
-        coord_std: float,
-        enhancement: float = 4.0,
-        activation: Activation = "silu",
-    ):
-
-        super().__init__()
-
-        width = int(enhancement * embed_dim)
-        self.activation = activation_func(activation)
-
-        self.feature_embed = nn.Linear(in_components, width)
-
-        self.coord_embed = nn.Sequential(
-            CoordinateEncoding(embed_dim, coord_std), nn.Linear(embed_dim, width)
-        )
-
-        self.proj = nn.Linear(width, embed_dim)
-
-    def forward(self, field: Tensor, coords: Tensor) -> Tensor:
-
-        field_emb = self.feature_embed(field)
-        coord_emb = self.coord_embed(coords)
-
-        x = field_emb * self.activation(coord_emb)
-
-        return self.proj(x)
-
-
 class ProximalAttention(nn.Module):
     def __init__(self, embed_dim: int, n_heads: Optional[int] = None, bias: bool = False):
 
