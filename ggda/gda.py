@@ -4,10 +4,10 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .pool import RangedCoulombPool
+from .pool import RangedCoulombPool, WeightedGaussianPool
 from .layers import CoordinateEncoding, ProximalAttention, MLP
-from .features import lda_x, mean_and_covariance
-from .utils import Activation, ShapeOrInt, log_cosh, cubic_grid, activation_func, dist
+from .features import lda, mean_and_covariance
+from .utils import Activation, ShapeOrInt, log_cosh, cubic_grid, activation_func, dist, std_scale
 
 
 class FieldEmbedding(nn.Module):
@@ -23,19 +23,26 @@ class FieldEmbedding(nn.Module):
         super().__init__()
 
         width = int(enhancement * embed_dim)
+        self.activation = activation_func(activation)
 
-        self.feature_embed = nn.Sequential(
-            nn.Linear(in_components, width, bias=False), nn.Tanh(), nn.Linear(width, embed_dim)
-        )
+        self.feature_embed = nn.Linear(in_components, width, bias=False)
 
         self.coord_embed = nn.Sequential(
             CoordinateEncoding(embed_dim, coord_std),
-            MLP(embed_dim, enhancement, activation=activation),
+            nn.Linear(embed_dim, width),
         )
 
+        self.proj = nn.Linear(width, embed_dim)
+
     def forward(self, x: Tensor, coords: Tensor) -> Tensor:
-        x = torch.log(torch.abs(x) + 1e4)
-        return self.feature_embed(x) + self.coord_embed(coords)
+
+        x = torch.log(x + 1e-4)
+        field_emb = self.feature_embed(x)
+        coord_emb = self.coord_embed(coords)
+
+        y = field_emb * self.activation(coord_emb)
+
+        return self.proj(y)
 
 
 class Block(nn.Module):
@@ -77,12 +84,11 @@ class FieldProjection(nn.Module):
         self.mlp = MLP(embed_dim, enhancement, activation=activation)
         self.proj = nn.Linear(embed_dim, out_features)
 
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim)
 
     def __call__(self, phi: Tensor) -> Tensor:
-        h = self.mlp(self.norm1(phi)).mean(dim=-2)
-        return self.proj(self.activation(self.norm2(h)))
+        h = self.mlp(self.norm(phi)).mean(dim=-2)
+        return self.proj(self.activation(h))
 
 
 class GlobalDensityApprox(nn.Module):
@@ -103,8 +109,8 @@ class GlobalDensityApprox(nn.Module):
         n_basis = n_basis or embed_dim
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        # self.pooling = WeightedGaussianPool(n_basis, coord_std)
-        self.pooling = RangedCoulombPool(n_basis, coord_std)
+        self.pooling = WeightedGaussianPool(n_basis, coord_std)
+        # self.pooling = RangedCoulombPool(n_basis, coord_std)
 
         self.field_embed = FieldEmbedding(
             in_components=n_basis,
@@ -143,11 +149,12 @@ class GlobalDensityApprox(nn.Module):
         phi = self.field_embed(phi, anchor_coords)
 
         distances = dist(anchor_coords, anchor_coords + 1e-5)
+        distances = std_scale(distances)
 
         for block in self.blocks:
             phi = block(phi, distances)
 
         E_corr = -log_cosh(self.field_proj(phi)).squeeze(dim=-1)
-        E_lda = torch.sum(wrho * lda_x(rho.clip(min=1e-7)), dim=-1)
+        E_lda = torch.sum(wrho * lda(rho.clip(min=1e-7)), dim=-1)
 
         return E_lda + E_corr

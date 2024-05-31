@@ -53,7 +53,7 @@ class WeightedGaussianPool(nn.Module):
         self.n_basis = n_basis
         self.cutoff = cutoff
 
-        means = torch.linspace(0, cutoff, n_basis) / cutoff
+        means = torch.linspace(0, 1, n_basis)
         self.register_buffer("means", means)
 
         self.register_buffer("beta", torch.tensor((scale * self.n_basis) ** 2))
