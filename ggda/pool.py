@@ -79,7 +79,7 @@ class RangedCoulombPool(nn.Module):
 
         # formula = f"( {tanh_keops('S * Norm2(R -r)')} / Norm2(R - r) ) * F"
 
-        formula = "SinXDivX(S * Norm2(R - r)) * F"
+        formula = "S * SinXDivX(S * Norm2(R - r)) * F"
         variables = [f"S = Pm({n_basis})", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
         self.conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
 
@@ -90,5 +90,5 @@ class RangedCoulombPool(nn.Module):
         if out_coords is None:
             out_coords = coords
 
-        k_ = torch.broadcast_to(self.k, f.shape[:-1] + (self.n_basis,))
-        return self.conv_fn(k_, out_coords, coords, f, *args, **kwargs) * self.k
+        k = torch.broadcast_to(log_cosh(self.k) + 1e-5, f.shape[:-1] + (self.n_basis,))
+        return self.conv_fn(k, out_coords, coords, f, *args, **kwargs)
