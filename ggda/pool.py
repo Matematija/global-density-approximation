@@ -7,6 +7,7 @@ from torch import Tensor
 import pykeops
 from pykeops.torch import Genred
 
+from .features import ttf
 from .utils import log_cosh
 
 pykeops.set_verbose(False)
@@ -96,26 +97,46 @@ class WeightedGaussianPool(nn.Module):
         return self.conv_fn(f, coords, out_coords, *args, **kwargs)
 
 
-class RangedCoulombPool(nn.Module):
-    def __init__(self, n_basis: int, length_scale: float, ndim: int = 3):
+class GradientPool(nn.Module):
+    def __init__(self, n_basis: int):
 
         super().__init__()
 
         self.n_basis = n_basis
+        self.linear = nn.Linear(1, n_basis)
 
-        kmax = 2 * torch.pi / length_scale
-        self.k = nn.Parameter(torch.linspace(0, kmax, n_basis))
-
-        formula = "S * SinXDivX(S * Norm2(R - r)) * F"
-        variables = [f"S = Pm({n_basis})", f"R = Vi({ndim})", f"r = Vj({ndim})", "F = Vj(1)"]
+        formula = "Exp(-B * SqDist(R,r)) * F"
+        variables = [f"B = Vj({n_basis})", f"R = Vi(3)", f"r = Vj(3)", "F = Vj(1)"]
         self.conv_fn = Genred(formula, aliases=variables, reduction_op="Sum", axis=1)
 
     def forward(
-        self, f: Tensor, coords: Tensor, out_coords: Optional[Tensor] = None, *args, **kwargs
+        self,
+        rho: Tensor,
+        gamma: Tensor,
+        coords: Tensor,
+        weights: Tensor,
+        out_coords: Optional[Tensor] = None,
+        *args,
+        **kwargs,
     ) -> Tensor:
+
+        # convention: gamma = ( \nabla n ) ^2
 
         if out_coords is None:
             out_coords = coords
 
-        k = torch.broadcast_to(log_cosh(self.k) + 1e-5, f.shape[:-1] + (self.n_basis,))
-        return self.conv_fn(k, out_coords, coords, f, *args, **kwargs)
+        rho_ = rho.clamp(min=1e-6).unsqueeze(-1)
+        gamma_ = gamma.clamp(min=1e-6).unsqueeze(-1)
+
+        x = gamma_ / (8 * rho_ * ttf(rho_))
+        x = log_cosh(self.linear(x))
+        beta = torch.pi * (rho.unsqueeze(-1) / 2) ** (2 / 3) * x
+        beta = torch.broadcast_to(beta, rho.shape + (self.n_basis,))
+
+        coords, out_coords = coords.contiguous(), out_coords.contiguous()
+        wrho = (weights * rho).contiguous()
+
+        y = self.conv_fn(beta, out_coords, coords, wrho, *args, **kwargs)
+        scale = (log_cosh(self.linear.bias)) ** (3 / 2)
+
+        return y * scale

@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .pool import RangedCoulombPool, WeightedGaussianPool
+from .pool import GradientPool
 from .layers import CoordinateEncoding, ProximalAttention, MLP
 from .features import lda, mean_and_covariance
 from .utils import Activation, ShapeOrInt, log_cosh, cubic_grid, activation_func, dist, std_scale
@@ -109,8 +109,7 @@ class GlobalDensityApprox(nn.Module):
         n_basis = n_basis or embed_dim
 
         self.register_buffer("grid", cubic_grid(grid_size).view(-1, 3))
-        self.pooling = WeightedGaussianPool(n_basis, coord_std)
-        # self.pooling = RangedCoulombPool(n_basis, coord_std)
+        self.pooling = GradientPool(n_basis)
 
         self.field_embed = FieldEmbedding(
             in_components=n_basis,
@@ -135,17 +134,17 @@ class GlobalDensityApprox(nn.Module):
         means, covs = mean_and_covariance(wrho, coords)
         s2, R = torch.linalg.eigh(covs)
 
-        coords = (coords - means.unsqueeze(-2)) @ R.mT.detach()
+        coords = (coords - means.unsqueeze(-2)) @ R.mT
         anchor_coords = 3 * torch.sqrt(s2 + 1e-5).unsqueeze(-2) * self.grid
 
         return coords, anchor_coords
 
-    def forward(self, rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+    def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
         wrho = weights * rho
         coords, anchor_coords = self.setup_grid(wrho, coords)
 
-        phi = self.pooling(wrho, coords, anchor_coords)
+        phi = self.pooling(rho, gamma, coords, weights, anchor_coords)
         phi = self.field_embed(phi, anchor_coords)
 
         distances = dist(anchor_coords, anchor_coords + 1e-5)
