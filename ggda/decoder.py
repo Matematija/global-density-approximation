@@ -15,24 +15,28 @@ class DensityEmbedding(nn.Module):
         coord_std: float,
         enhancement: float = 4.0,
         activation: Activation = "silu",
+        eps: float = 1e-4,
     ):
 
         super().__init__()
 
+        self.eps = eps
         width = int(enhancement * embed_dim)
 
-        self.feature_embed = nn.Sequential(
-            nn.Linear(1, width, bias=False), nn.Tanh(), nn.Linear(width, embed_dim)
+        self.field_embed = nn.Sequential(
+            nn.Linear(2, width), nn.Tanh(), nn.Linear(width, embed_dim)
         )
 
         self.coord_embed = nn.Sequential(
-            CoordinateEncoding(embed_dim, coord_std),
-            MLP(embed_dim, enhancement, activation=activation),
+            CoordinateEncoding(embed_dim, coord_std), MLP(embed_dim, enhancement, activation)
         )
 
-    def forward(self, rho: Tensor, coords: Tensor) -> Tensor:
-        phi = torch.log(rho + 1e-4).unsqueeze(-1)
-        return self.feature_embed(phi) + self.coord_embed(coords)
+    def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor) -> Tensor:
+
+        phi = torch.stack([rho, gamma], dim=-1)
+        phi = torch.log(phi + self.eps)
+
+        return self.field_embed(phi) + self.coord_embed(coords)
 
 
 class DecoderBlock(nn.Module):
@@ -93,15 +97,15 @@ class Decoder(nn.Module):
 
         super().__init__()
 
-        make_block = lambda: DecoderBlock(embed_dim, n_heads, enhancement, activation=activation)
+        make_block = lambda: DecoderBlock(embed_dim, n_heads, enhancement, activation)
 
         self.embed = DensityEmbedding(embed_dim, coord_std, enhancement, activation)
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
-        self.project = FieldProjection(embed_dim, out_features, activation=activation)
+        self.project = FieldProjection(embed_dim, out_features, enhancement, activation)
 
-    def forward(self, rho: Tensor, coords: Tensor, context: Tensor) -> Tensor:
+    def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, context: Tensor) -> Tensor:
 
-        phi = self.embed(rho, coords)
+        phi = self.embed(rho, gamma, coords)
 
         for block in self.blocks:
             phi = block(phi, context)

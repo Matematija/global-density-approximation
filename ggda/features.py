@@ -6,6 +6,11 @@ from torch import Tensor
 from einops import rearrange
 
 
+def rescaled_grad(rho: Tensor, gamma: Tensor, *, clip_val: float = 1e-5) -> Tensor:
+    rho_ = rho.clip(min=clip_val)
+    return gamma / (4 * (3 * torch.pi**2) ** (2 / 3) * rho_ ** (8 / 3))
+
+
 def ttf(rho: Tensor) -> Tensor:
     return (3 / 10) * (3 * torch.pi**2 * rho) ** (2 / 3)
 

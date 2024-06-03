@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch import Tensor, BoolTensor
 
 from einops import rearrange
@@ -111,3 +112,44 @@ class Attention(nn.Module):
         mask = ~kv_mask if kv_mask is not None else None
         out, _ = self.attention(query, key, value, key_padding_mask=mask, need_weights=False)
         return out
+
+
+class AxialAttention(nn.Module):
+    def __init__(self, embed_dim: int, heads_per_dim: Optional[int] = None, bias: bool = True):
+
+        self.heads_per_dim = heads_per_dim or max(embed_dim // 32, 1)
+        self.head_size = embed_dim // self.heads_per_dim
+
+        self.q_proj = nn.Linear(embed_dim, self.heads_per_dim * self.head_size, bias=bias)
+        self.k_proj = nn.Linear(embed_dim, self.heads_per_dim * self.head_size, bias=bias)
+        self.v_proj = nn.Linear(embed_dim, self.heads_per_dim * self.head_size, bias=bias)
+
+        self.out_proj = nn.Linear(3 * self.heads_per_dim * self.head_size, embed_dim)
+
+    def forward(self, x: Tensor):
+
+        q, k, v = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+
+        qx = rearrange(q, "... x y z (h d) -> ... h y z x d", h=self.heads_per_dim)
+        kx = rearrange(k, "... x y z (h d) -> ... h y z x d", h=self.heads_per_dim)
+        vx = rearrange(v, "... x y z (h d) -> ... h y z x d", h=self.heads_per_dim)
+
+        qy = rearrange(q, "... x y z (h d) -> ... h z x y d", h=self.heads_per_dim)
+        ky = rearrange(k, "... x y z (h d) -> ... h z x y d", h=self.heads_per_dim)
+        vy = rearrange(v, "... x y z (h d) -> ... h z x y d", h=self.heads_per_dim)
+
+        qz = rearrange(q, "... x y z (h d) -> ... h x y z d", h=self.heads_per_dim)
+        kz = rearrange(k, "... x y z (h d) -> ... h x y z d", h=self.heads_per_dim)
+        vz = rearrange(v, "... x y z (h d) -> ... h x y z d", h=self.heads_per_dim)
+
+        attn_x = F.scaled_dot_product_attention(qx, kx, vx)
+        attn_y = F.scaled_dot_product_attention(qy, ky, vy)
+        attn_z = F.scaled_dot_product_attention(qz, kz, vz)
+
+        attn_x = rearrange(attn_x, "... h y z x d -> ... x y z (h d)")
+        attn_y = rearrange(attn_y, "... h z x y d -> ... x y z (h d)")
+        attn_z = rearrange(attn_z, "... h x y z d -> ... x y z (h d)")
+
+        attn = torch.cat([attn_x, attn_y, attn_z], dim=-1)
+
+        return self.out_proj(attn)

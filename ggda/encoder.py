@@ -64,7 +64,7 @@ class Encoder(nn.Module):
         embed_dim: int,
         n_blocks: int,
         n_heads: Optional[int] = None,
-        coord_std: float = 3.0,
+        coord_std: float = 2.0,
         enhancement: float = 4.0,
         activation: Activation = "silu",
     ):
