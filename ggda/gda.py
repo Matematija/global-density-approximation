@@ -2,7 +2,6 @@ from typing import Optional
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 from torch import Tensor
 
 from .pool import CoarseGraining
@@ -10,16 +9,16 @@ from .encoder import Encoder
 from .decoder import Decoder
 from .layers import MLP
 from .features import lda, mean_and_covariance
-from .utils import Activation, log_cosh, cubic_grid
+from .utils import Activation, cubic_grid
 
 
 class GlobalDensityApprox(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        n_encoder_blocks: int,
-        n_decoder_blocks: int,
+        n_blocks: int,
         n_basis: Optional[int] = None,
+        n_decoder_blocks: int = 1,
         coord_std: float = 2.0,
         grid_size: int = 8,
         n_heads: int = None,
@@ -37,7 +36,7 @@ class GlobalDensityApprox(nn.Module):
         self.encoder = Encoder(
             n_basis=self.n_basis,
             embed_dim=embed_dim,
-            n_blocks=n_encoder_blocks,
+            n_blocks=n_blocks,
             n_heads=n_heads,
             coord_std=coord_std,
             enhancement=enhancement,
@@ -49,6 +48,7 @@ class GlobalDensityApprox(nn.Module):
             out_features=2,
             n_blocks=n_decoder_blocks,
             n_heads=n_heads,
+            coord_std=coord_std,
             enhancement=enhancement,
             activation=activation,
         )

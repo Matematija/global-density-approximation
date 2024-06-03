@@ -52,7 +52,8 @@ class CoarseGraining(nn.Module):
         exponent = log_cosh(self.field_embed(x))
         heg_scale = log_cosh(self.field_embed(self.x0)) ** (3 / 2)
 
-        beta = torch.pi * (rho.unsqueeze(-1) / 2) ** (2 / 3) * exponent
+        rho_ = rho.clip(min=1e-6).unsqueeze(-1)
+        beta = torch.pi * (rho_ / 2) ** (2 / 3) * exponent
         beta = torch.broadcast_to(beta, rho.shape + (self.n_basis,))
 
         coords, out_coords = coords.contiguous(), out_coords.contiguous()
