@@ -23,7 +23,6 @@ class CoarseGraining(nn.Module):
         width = int(n_basis * enhancement)
 
         self.field_embed = nn.Sequential(nn.Linear(1, width), nn.Tanh(), nn.Linear(width, n_basis))
-
         self.register_buffer("x0", torch.tensor([0.0]))
 
         formula = "Exp(-B * SqDist(R,r)) * F"
@@ -50,15 +49,19 @@ class CoarseGraining(nn.Module):
         x = torch.log(x + self.eps).unsqueeze(-1)
 
         exponent = log_cosh(self.field_embed(x))
-        heg_scale = log_cosh(self.field_embed(self.x0)) ** (3 / 2)
+        # heg_scale = log_cosh(self.field_embed(self.x0)) ** (3 / 2)
 
-        rho_ = rho.clip(min=1e-6).unsqueeze(-1)
-        beta = torch.pi * (rho_ / 2) ** (2 / 3) * exponent
+        rho_ = rho.clip(min=1e-5).unsqueeze(-1)
+        beta = torch.pi * (rho_ ** (2 / 3)) * exponent
         beta = torch.broadcast_to(beta, rho.shape + (self.n_basis,))
 
-        coords, out_coords = coords.contiguous(), out_coords.contiguous()
+        beta = beta.contiguous()
+        coords = coords.contiguous()
+        out_coords = out_coords.contiguous()
         wrho = (weights * rho).contiguous()
 
         y = self.conv_fn(beta, out_coords, coords, wrho, *args, **kwargs)
 
-        return y * heg_scale
+        return y
+
+        # return y * heg_scale
