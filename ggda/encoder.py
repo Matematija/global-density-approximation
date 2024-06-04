@@ -1,5 +1,6 @@
 from typing import Optional
 
+import torch
 from torch import nn
 from torch import Tensor
 
@@ -15,14 +16,16 @@ class FeatureEmbeding(nn.Module):
         coord_std: float,
         enhancement: float = 4.0,
         activation: Activation = "silu",
+        eps: float = 1e-4,
     ):
 
         super().__init__()
 
+        self.eps = eps
         width = int(enhancement * embed_dim)
 
         self.feature_embed = nn.Sequential(
-            nn.Linear(in_components, width, bias=False), nn.Softsign(), nn.Linear(width, embed_dim)
+            nn.Linear(in_components, width, bias=False), nn.Tanh(), nn.Linear(width, embed_dim)
         )
 
         self.coord_embed = nn.Sequential(
@@ -31,6 +34,7 @@ class FeatureEmbeding(nn.Module):
         )
 
     def forward(self, x: Tensor, coords: Tensor) -> Tensor:
+        x = torch.log(x + self.eps)
         return self.feature_embed(x) + self.coord_embed(coords)
 
 
