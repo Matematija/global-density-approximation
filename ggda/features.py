@@ -7,8 +7,8 @@ from einops import rearrange
 
 
 def rescaled_grad(rho: Tensor, gamma: Tensor, *, clip_val: float = 1e-5) -> Tensor:
-    rho_ = rho.clip(min=clip_val)
-    return gamma / (4 * (3 * torch.pi**2) ** (2 / 3) * rho_ ** (8 / 3))
+    rho_ = torch.clip(rho ** (8 / 3), min=clip_val)
+    return gamma / (4 * (3 * torch.pi**2) ** (2 / 3) * rho_)
 
 
 def ttf(rho: Tensor) -> Tensor:
@@ -19,7 +19,7 @@ def lda_x(rho: Tensor) -> Tensor:
     return -(3 / 4) * (3 * rho / torch.pi) ** (1 / 3)
 
 
-def lda_c_pz(rho: Tensor) -> Tensor:
+def lda_c(rho: Tensor) -> Tensor:
 
     # Perdew-Zunger LDA correlation
     # J. P. Perdew and A. Zunger., Phys. Rev. B 23, 5048 (1981) (doi: 10.1103/PhysRevB.23.5048)
@@ -37,7 +37,7 @@ def lda_c_pz(rho: Tensor) -> Tensor:
     return torch.where(rs < 1, high_density, low_density)
 
 
-def lda_c(rho):
+def lda_c_vwn(rho):
 
     # Vosko-Wilk-Nusair LDA correlation
     # S. H. Vosko, L. Wilk, and M. Nusair., Can. J. Phys. 58, 1200 (1980) (doi: 10.1139/p80-159)
