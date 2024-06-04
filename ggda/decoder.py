@@ -5,6 +5,7 @@ from torch import nn
 from torch import Tensor
 
 from .layers import MLP, Attention, CoordinateEncoding
+from .features import rescaled_grad
 from .utils import Activation, activation_func
 
 
@@ -24,7 +25,7 @@ class DensityEmbedding(nn.Module):
         width = int(enhancement * embed_dim)
 
         self.field_embed = nn.Sequential(
-            nn.Linear(2, width), nn.Tanh(), nn.Linear(width, embed_dim)
+            nn.Linear(1, width), nn.Tanh(), nn.Linear(width, embed_dim)
         )
 
         self.coord_embed = nn.Sequential(
@@ -33,8 +34,8 @@ class DensityEmbedding(nn.Module):
 
     def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor) -> Tensor:
 
-        phi = torch.stack([rho, gamma], dim=-1)
-        phi = torch.log(phi + self.eps)
+        x = rescaled_grad(rho, gamma).unsqueeze(-1)
+        phi = torch.log(x + self.eps)
 
         return self.field_embed(phi) + self.coord_embed(coords)
 
