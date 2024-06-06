@@ -70,6 +70,20 @@ def std_scale(
 _ShapeOrInt = Union[int, Sequence[int]]
 
 
+def random_unit_vec(
+    n: _ShapeOrInt, device: Optional[Device] = None, dtype: Optional[Dtype] = None
+) -> Tensor:
+
+    thetas = torch.pi * torch.rand(n, device=device, dtype=dtype)
+    phis = 2 * torch.pi * torch.rand(n, device=device, dtype=dtype)
+
+    x = torch.sin(thetas) * torch.cos(phis)
+    y = torch.sin(thetas) * torch.sin(phis)
+    z = torch.cos(thetas)
+
+    return torch.stack([x, y, z], dim=-1)
+
+
 def cubic_grid(
     npts: _ShapeOrInt,
     stack_dim: int = -1,
