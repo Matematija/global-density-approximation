@@ -6,7 +6,7 @@ from torch.nn import functional as F
 from torch import Tensor
 
 from .layers import MLP, LinearSelfAttention
-from .features import lda_x, lda_c, rescaled_grad, mean_and_covariance
+from .features import lda_x, lda_c, mean_and_covariance
 from .utils import Activation, activation_func, log_cosh
 
 
@@ -16,12 +16,12 @@ class DensityEmbedding(nn.Module):
         super().__init__()
 
         self.eps = eps
-        width = int(enhancement * embed_dim)
 
-        self.lift = nn.Sequential(nn.Linear(1, width), nn.Tanh(), nn.Linear(width, embed_dim))
+        width = int(enhancement * embed_dim)
+        self.lift = nn.Sequential(nn.Linear(2, width), nn.Tanh(), nn.Linear(width, embed_dim))
 
     def forward(self, rho: Tensor, gamma: Tensor) -> Tensor:
-        x = rescaled_grad(rho, gamma).unsqueeze(-1)
+        x = torch.stack([rho, gamma], dim=-1)
         return self.lift(torch.log(x + self.eps))
 
 
@@ -43,9 +43,13 @@ class Block(nn.Module):
         self.attn_norm = nn.LayerNorm(embed_dim)
         self.mlp_norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, phi: Tensor, coords: Tensor, weights: Optional[Tensor] = None) -> Tensor:
-        attn = self.attention(phi, coords, weights)
+    def forward(
+        self, phi: Tensor, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor
+    ) -> Tensor:
+
+        attn = self.attention(phi, rho, gamma, coords, weights)
         phi = self.attn_norm(phi + attn)
+
         return self.mlp_norm(phi + self.mlp(phi))
 
 
@@ -95,15 +99,13 @@ class GlobalDensityApprox(nn.Module):
 
     def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
-        phi = self.embedding(rho, gamma)
         coords = self.rotate_coords(weights * rho, coords)
+        phi = self.embedding(rho, gamma)
 
         for block in self.blocks:
-            phi = block(phi, coords, weights)
+            phi = block(phi, rho, gamma, coords, weights)
 
         scale_x, scale_c, bias = self.proj(phi).unbind(dim=-1)
         scale_x, scale_c, bias = F.softplus(scale_x), F.softplus(scale_c), -log_cosh(bias)
 
-        rho_ = rho.clip(min=1e-6)
-
-        return scale_x * lda_x(rho_) + scale_c * lda_c(rho_) + bias
+        return scale_x * lda_x(rho + 1e-7) + scale_c * lda_c(rho + 1e-7) + bias

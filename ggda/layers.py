@@ -4,7 +4,8 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .utils import Activation, activation_func, random_unit_vec
+from .features import rescaled_grad
+from .utils import Activation, activation_func, random_unit_vec, log_cosh
 
 
 class MLP(nn.Module):
@@ -114,6 +115,9 @@ class LinearSelfAttention(nn.Module):
         self.value_proj = nn.Linear(embed_dim, self.inner_dim, bias=bias)
         self.out_proj = nn.Linear(self.inner_dim, embed_dim, bias=bias)
 
+        self.key_density_weight = nn.Linear(1, self.inner_dim, bias=bias)
+        self.value_density_weight = nn.Linear(1, self.inner_dim, bias=bias)
+
         self.pos_enc = RotaryPositionalEncoding(embed_dim, min_scale)
 
         self._initialize_query_proj()
@@ -133,28 +137,21 @@ class LinearSelfAttention(nn.Module):
             if self.query_proj.bias is not None:
                 nn.init.zeros_(self.query_proj.bias)
 
-    def forward(self, phi: Tensor, coords: Tensor, weights: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self, phi: Tensor, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor
+    ) -> Tensor:
 
         query = self.query_proj(phi)
         key = basis_norm(self.key_proj(phi), weights)
         value = basis_norm(self.value_proj(phi), weights)
 
+        x = rescaled_grad(rho + 1e-12, gamma).unsqueeze(-1)
+        key = key * torch.exp(-0.5 * self.key_density_weight(x) ** 2)
+        value = value * torch.exp(-0.5 * self.value_density_weight(x) ** 2)
+
+        key = key * (weights * rho).unsqueeze(-1)
+
         query = self.pos_enc(query, coords)
         key = self.pos_enc(key, coords)
-
-        if weights is not None:
-
-            if weights.dtype == torch.bool:
-                norm = query.size(-2) ** 0.5
-                mask = ~weights.unsqueeze(-1)
-                key = key.masked_fill(mask, 0.0) / norm
-                value = value.masked_fill(mask, 0.0) / norm
-            else:
-                key = key * weights.unsqueeze(-1)
-
-        else:
-            norm = query.size(-2) ** 0.5
-            key = key / norm
-            value = value / norm
 
         return self.out_proj(query @ (key.mT @ value))

@@ -1,4 +1,5 @@
 from typing import Optional
+from math import log, pi
 
 import torch
 from torch import Tensor
@@ -6,13 +7,16 @@ from torch import Tensor
 from einops import rearrange
 
 
-def rescaled_grad(rho: Tensor, gamma: Tensor, *, clip_val: float = 1e-5) -> Tensor:
-    rho_ = torch.clip(rho ** (8 / 3), min=clip_val)
-    return gamma / (4 * (3 * torch.pi**2) ** (2 / 3) * rho_)
+def rescaled_grad(rho: Tensor, gamma: Tensor) -> Tensor:
+    return gamma / (4 * (3 * torch.pi**2) ** (2 / 3) * rho ** (8 / 3))
 
 
-def ttf(rho: Tensor) -> Tensor:
-    return (3 / 10) * (3 * torch.pi**2 * rho) ** (2 / 3)
+def t_weisacker(rho: Tensor, gamma: Tensor) -> Tensor:
+    return gamma / (8 * rho)
+
+
+def t_thomas_fermi(rho: Tensor) -> Tensor:
+    return (3 / 10) * (3 * torch.pi**2) ** (2 / 3) * rho ** (5 / 3)
 
 
 def lda_x(rho: Tensor) -> Tensor:
@@ -63,6 +67,42 @@ def lda_xc(rho: Tensor) -> Tensor:
 
 def lda(rho: Tensor) -> Tensor:
     return lda_x(rho) + lda_c(rho)
+
+
+def pbe_x(rho: Tensor, gamma: Tensor) -> Tensor:
+    kappa, mu = 0.804, 0.2195
+    x = mu * rescaled_grad(rho, gamma)
+    return lda_x(rho) * (1 + x / (1 + x / kappa))
+
+
+def pbe_c(rho: Tensor, gamma: Tensor) -> Tensor:
+
+    ec_lda = lda_c(rho)
+
+    beta, gamma_ = 0.066725, (1 - log(2)) / pi**2
+    C = beta / gamma_
+    phi = 1.0  # Spin correction - not used
+
+    rho73 = torch.clip(rho ** (7 / 3), min=1e-12)
+    t2 = ((torch.pi / 3) ** (1 / 3)) * (gamma / rho73) / (16 * phi**2)
+
+    exp = torch.exp(ec_lda / (gamma_ * phi**3))
+    At2 = t2 * C * (exp / (1 - exp))
+    # At2 = t2 * C / torch.special.expm1(-ec_lda / (gamma_ * phi**3))
+
+    # fraction = (1 + At2) / (1 + At2 + At2**2)
+    fraction = 1 / (1 + At2**2 / (1 + At2))
+    H = gamma_ * phi**3 * torch.log1p(C * t2 * fraction)
+
+    return ec_lda + H
+
+
+def pbe_xc(rho: Tensor, gamma: Tensor) -> Tensor:
+    return torch.stack([pbe_x(rho, gamma), pbe_c(rho, gamma)], dim=-1)
+
+
+def pbe(rho: Tensor, gamma: Tensor) -> Tensor:
+    return pbe_x(rho, gamma) + pbe_c(rho, gamma)
 
 
 def dipole_moment(wrho: Tensor, coords: Tensor, norm: Optional[Tensor] = None) -> Tensor:
