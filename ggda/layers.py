@@ -77,11 +77,6 @@ class GatedMLP(nn.Module):
 #     return psi / torch.sqrt(norm_squared + eps)
 
 
-def orbital_norm(psi: Tensor, weights: Tensor, eps: float = 1e-5) -> Tensor:
-    norm_squared = torch.einsum("...x,...xi->...i", weights, torch.abs(psi) ** 2)
-    return psi / torch.sqrt(norm_squared + eps).unsqueeze(-2)
-
-
 # def gaussian_kernel(x: Tensor, y: Tensor, sigma: float) -> Tensor:
 #     norm = (2 * torch.pi * sigma**2) ** (x.shape[-1] / 2)
 #     d2 = torch.sum((x[..., :, None, :] - y[..., None, :, :]) ** 2, dim=-1)
@@ -110,19 +105,36 @@ def orbital_norm(psi: Tensor, weights: Tensor, eps: float = 1e-5) -> Tensor:
 #     return left, right
 
 
-# class FourierPositionalEncoding(nn.Module):
-#     def __init__(self, n_modes: int, kernel_scale: float, ndim: int = 3):
+def orbital_norm(psi: Tensor, weights: Tensor, eps: float = 1e-5) -> Tensor:
+    norm_squared = torch.einsum("...x,...xi->...i", weights, torch.abs(psi) ** 2)
+    return psi / torch.sqrt(norm_squared + eps).unsqueeze(-2)
 
-#         super().__init__()
 
-#         self.n_modes = n_modes
+class FourierPositionalEncoding(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        kernel_scale: float,
+        enhancement: float = 2.0,
+        activation: Activation = "silu",
+        n_modes: Optional[int] = None,
+        ndim: int = 3,
+    ):
 
-#         self.mode_lift = nn.Linear(ndim, n_modes)
-#         nn.init.normal_(self.mode_lift.weight, std=1 / kernel_scale)
-#         nn.init.uniform_(self.mode_lift.bias, a=-torch.pi, b=torch.pi)
+        super().__init__()
 
-#     def forward(self, coords: Tensor) -> Tensor:
-#         return sqrt(2 / self.n_modes) * torch.cos(self.mode_lift(coords)).mT
+        self.n_modes = n_modes or embed_dim
+        assert self.n_modes % 2 == 0, "Embedding dimension must be even"
+
+        self.mode_lift = nn.Linear(ndim, self.n_modes // 2, bias=False)
+        nn.init.normal_(self.mode_lift.weight, std=1 / kernel_scale)
+
+        self.mlp = MLP(self.n_modes, enhancement, activation, out_features=embed_dim)
+
+    def forward(self, coords: Tensor) -> Tensor:
+        phases = self.mode_lift(coords)
+        x = torch.cat([torch.cos(phases), torch.sin(phases)], dim=-1)
+        return self.mlp(x / sqrt(self.n_modes))
 
 
 class RotaryPositionalEncoding(nn.Module):
