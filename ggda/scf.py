@@ -7,6 +7,7 @@ from pyscf import gto, dft
 from pyscf.dft.numint import NumInt
 
 from .gda import GlobalDensityApprox
+from .libxc import eval_xc
 
 Molecule = gto.mole.Mole
 KohnShamDFT = dft.RKS
@@ -14,9 +15,10 @@ Grid = dft.gen_grid.Grids
 
 
 class GDANumInt(NumInt):
-    def __init__(self, gda: GlobalDensityApprox):
+    def __init__(self, xc: str, gda: GlobalDensityApprox):
 
         super().__init__()
+        self.xc = xc
 
         if torch.cuda.is_available():
             self.gda = gda.cuda().eval()
@@ -37,21 +39,26 @@ class GDANumInt(NumInt):
         if grids.coords is None:
             grids.build(with_non0tab=True)
 
-        ao_vals = self.eval_ao(mol, grids.coords, deriv=0, cutoff=grids.cutoff)
+        ao_vals = self.eval_ao(mol, grids.coords, deriv=1, cutoff=grids.cutoff)
 
         coords = torch.tensor(grids.coords, device=self.device, dtype=torch.float32)
         weights = torch.tensor(grids.weights, device=self.device, dtype=torch.float32)
-        ao = torch.tensor(ao_vals, device=self.device, dtype=torch.float32)
+        ao = torch.tensor(ao_vals[0], device=self.device, dtype=torch.float32)
+        grad_ao = torch.tensor(ao_vals[1:], device=self.device, dtype=torch.float32)
         dm = torch.tensor(dms, device=self.device, dtype=torch.float32, requires_grad=True)
 
         rho = torch.einsum("mn,xm,xn->x", dm, ao, ao)
-        wrho = weights * rho
+        grad_rho = 2 * torch.einsum("mn,xm,cxn->xc", dm, ao, grad_ao)
+        gamma = torch.sum(grad_rho**2, dim=-1)
 
-        Exc = wrho @ self.gda(rho, coords, weights)
+        tau = self.gda.eval_tau(rho, gamma, coords, weights)
+        exc = eval_xc(self.xc, rho, gamma, tau)
+        Exc = weights @ exc
+
         (X,) = autograd.grad(Exc, dm, grad_outputs=torch.ones_like(Exc))
 
         with torch.no_grad():
-            N = torch.sum(wrho)
+            N = weights @ rho
 
         nelec = N.detach().item()
         excsum = Exc.detach().item()
