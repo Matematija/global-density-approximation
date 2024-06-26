@@ -1,9 +1,12 @@
 from warnings import warn
 
+import numpy as np
+
 import torch
 from torch import autograd
 
 from pyscf import gto, dft
+from pyscf.dft import libxc
 from pyscf.dft.numint import NumInt
 
 from .gda import GlobalDensityApprox
@@ -15,10 +18,9 @@ Grid = dft.gen_grid.Grids
 
 
 class GDANumInt(NumInt):
-    def __init__(self, xc: str, gda: GlobalDensityApprox):
+    def __init__(self, gda: GlobalDensityApprox):
 
         super().__init__()
-        self.xc = xc
 
         if torch.cuda.is_available():
             self.gda = gda.cuda().eval()
@@ -30,39 +32,57 @@ class GDANumInt(NumInt):
 
         self.gda.zero_grad()
 
+    def to_tensor(self, arr, requires_grad=False):
+        return torch.tensor(
+            arr, device=self.device, dtype=torch.float32, requires_grad=requires_grad
+        )
+
     def nr_rks(
         self, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None
     ):
 
-        del xc_code, relativity, hermi, max_memory, verbose
+        del relativity, hermi, max_memory, verbose
 
         if grids.coords is None:
             grids.build(with_non0tab=True)
 
-        ao_vals = self.eval_ao(mol, grids.coords, deriv=1, cutoff=grids.cutoff)
+        xc_type = libxc.xc_type(xc_code)
 
-        coords = torch.tensor(grids.coords, device=self.device, dtype=torch.float32)
-        weights = torch.tensor(grids.weights, device=self.device, dtype=torch.float32)
-        ao = torch.tensor(ao_vals[0], device=self.device, dtype=torch.float32)
-        grad_ao = torch.tensor(ao_vals[1:], device=self.device, dtype=torch.float32)
-        dm = torch.tensor(dms, device=self.device, dtype=torch.float32, requires_grad=True)
+        if xc_type not in ["LDA", "GGA", "MGGA"]:
+            raise NotImplementedError("Only LDA, GGA, and MGGA XC functionals are supported.")
 
+        if xc_type == "LDA":
+            ao_vals = self.eval_ao(mol, grids.coords, deriv=0, cutoff=grids.cutoff)
+            ao = torch.tensor(ao_vals, device=self.device, dtype=torch.float32)
+        else:
+            ao_vals = self.eval_ao(mol, grids.coords, deriv=1, cutoff=grids.cutoff)
+            ao, grad_ao = self.to_tensor(ao_vals[0]), self.to_tensor(ao_vals[1:4])
+
+        coords = self.to_tensor(grids.coords)
+        weights = self.to_tensor(grids.weights)
+
+        dm = self.to_tensor(dms, requires_grad=True)
         rho = torch.einsum("mn,xm,xn->x", dm, ao, ao)
-        grad_rho = 2 * torch.einsum("mn,xm,cxn->xc", dm, ao, grad_ao)
-        gamma = torch.sum(grad_rho**2, dim=-1)
+        gamma, tau = None, None
 
-        tau = self.gda.eval_tau(rho, gamma, coords, weights)
-        exc = eval_xc(self.xc, rho, gamma, tau)
-        Exc = weights @ exc
+        if xc_type in ["GGA", "MGGA"]:
+            grad_rho = 2 * torch.einsum("mn,xm,cxn->xc", dm, ao, grad_ao)
+            gamma = torch.sum(grad_rho**2, dim=-1)
 
+        if xc_type == "MGGA":
+            tau = self.gda.eval_tau(rho, gamma, coords, weights)
+
+        Exc = weights @ eval_xc(xc_code, rho, gamma, tau)
         (X,) = autograd.grad(Exc, dm, grad_outputs=torch.ones_like(Exc))
+
+        X = (X + X.mT) / 2
 
         with torch.no_grad():
             N = weights @ rho
 
         nelec = N.detach().item()
         excsum = Exc.detach().item()
-        vmat = X.detach().cpu().numpy()
+        vmat = X.detach().cpu().numpy().astype(np.float64)
 
         return nelec, excsum, vmat
 
