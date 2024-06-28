@@ -38,7 +38,7 @@ class CiderFeatures(nn.Module):
 
         # convention: gamma = ( \nabla n ) ^2
 
-        rho_ = (rho + 1e-12).unsqueeze(-1)
+        rho_ = (rho + 1e-8).unsqueeze(-1)
         gamma_ = gamma.unsqueeze(-1)
         x = t_weisacker(rho_, gamma_) / t_thomas_fermi(rho_)
 

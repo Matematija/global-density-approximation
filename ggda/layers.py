@@ -186,9 +186,6 @@ class LinearSelfAttention(nn.Module):
 
     def forward(self, phi: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
-        # query, key = self.query_proj(phi), self.key_proj(phi)
-        # value = self.value_proj(torch.tanh(phi))
-
         query, key, value = self.query_proj(phi), self.key_proj(phi), self.value_proj(phi)
         query, key, value = self._normalize(query, key, value, weights)
 

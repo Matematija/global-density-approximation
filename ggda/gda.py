@@ -3,19 +3,51 @@ from torch import nn
 from torch import Tensor
 
 from .embed import CiderFeatures
-from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding
+from .layers import GatedMLP, FourierAttention
 from .features import rescaled_grad, mean_and_covariance, t_weisacker, t_thomas_fermi
-from .utils import Activation, activation_func
+from .utils import Activation
+
+
+# class DensityEmbedding(nn.Module):
+#     def __init__(
+#         self,
+#         embed_dim: int,
+#         kernel_scale: float,
+#         embed_params: tuple[float, float] = (4.0, 4.0),
+#         enhancement: float = 2.0,
+#         activation: Activation = "silu",
+#         eps: float = 1e-4,
+#     ):
+
+#         super().__init__()
+#         self.eps = eps
+
+#         width = int(embed_dim * enhancement)
+
+#         self.nonlocal_features = CiderFeatures(*embed_params)
+#         self.field_embed = nn.Sequential(
+#             nn.Linear(4, width), nn.Tanh(), nn.Linear(width, embed_dim)
+#         )
+
+#         self.coord_embed = FourierPositionalEncoding(width, kernel_scale, 1.0, activation)
+
+#     def forward(
+#         self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, *args, **kwargs
+#     ) -> Tensor:
+
+#         x0 = rescaled_grad(rho + 1e-12, gamma).unsqueeze(-1)
+#         x1 = self.nonlocal_features(rho, gamma, coords, weights, *args, **kwargs)
+#         x = torch.log(torch.cat([x0, x1], dim=-1) + self.eps)
+
+#         return self.field_embed(x) + self.coord_embed(coords)
 
 
 class DensityEmbedding(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        kernel_scale: float,
         embed_params: tuple[float, float] = (4.0, 4.0),
         enhancement: float = 2.0,
-        activation: Activation = "silu",
         eps: float = 1e-4,
     ):
 
@@ -25,22 +57,17 @@ class DensityEmbedding(nn.Module):
         width = int(embed_dim * enhancement)
 
         self.nonlocal_features = CiderFeatures(*embed_params)
-        self.lift = nn.Linear(4, width)
-        self.proj = nn.Linear(width, embed_dim)
-
-        self.pos_enc = FourierPositionalEncoding(width, kernel_scale, 1.0, activation)
+        self.lift = nn.Sequential(nn.Linear(4, width), nn.Tanh(), nn.Linear(width, embed_dim))
 
     def forward(
         self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, *args, **kwargs
     ) -> Tensor:
 
-        x0 = rescaled_grad(rho + 1e-12, gamma).unsqueeze(-1)
+        x0 = rescaled_grad(rho + 1e-8, gamma).unsqueeze(-1)
         x1 = self.nonlocal_features(rho, gamma, coords, weights, *args, **kwargs)
         x = torch.cat([x0, x1], dim=-1)
 
-        phi = torch.log(x + self.eps)
-        phi = self.lift(phi) + self.pos_enc(coords)
-        return self.proj(torch.tanh(phi))
+        return self.lift(torch.log(x + self.eps))
 
 
 class Block(nn.Module):
@@ -56,14 +83,11 @@ class Block(nn.Module):
 
         self.attention = FourierAttention(embed_dim, kernel_scale)
         self.mlp = GatedMLP(embed_dim, enhancement, activation)
-
-        self.attn_norm = nn.LayerNorm(embed_dim)
-        self.mlp_norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim)
 
     def forward(self, phi: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-        attn = self.attention(phi, coords, weights)
-        phi = self.attn_norm(phi + attn)
-        return self.mlp_norm(phi + self.mlp(phi))
+        phi = phi + self.attention(phi, coords, weights)
+        return phi + self.mlp(self.norm(phi))
 
 
 class FieldProjection(nn.Module):
@@ -77,13 +101,13 @@ class FieldProjection(nn.Module):
 
         super().__init__()
 
-        self.activation = activation_func(activation)
-
+        self.norm = nn.LayerNorm(embed_dim)
         self.mlp = GatedMLP(embed_dim, enhancement, activation)
         self.proj = nn.Linear(embed_dim, out_features)
 
     def __call__(self, phi: Tensor) -> Tensor:
-        return self.proj(self.activation(self.mlp(phi)))
+        phi = self.mlp(self.norm(phi))
+        return self.proj(torch.tanh(phi))
 
 
 class GlobalDensityApprox(nn.Module):
@@ -102,9 +126,7 @@ class GlobalDensityApprox(nn.Module):
 
         self.eta = eta
 
-        self.embedding = DensityEmbedding(
-            embed_dim, kernel_scale, embed_params, enhancement, activation
-        )
+        self.embedding = DensityEmbedding(embed_dim, embed_params, enhancement)
 
         make_block = lambda: Block(embed_dim, kernel_scale, enhancement, activation)
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
@@ -114,7 +136,7 @@ class GlobalDensityApprox(nn.Module):
     def eval_tau(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
         phi = self(rho, gamma, coords, weights)
-        t0, tw = t_thomas_fermi(rho), t_weisacker(rho + 1e-12, gamma)
+        t0, tw = t_thomas_fermi(rho + 1e-12), t_weisacker(rho + 1e-12, gamma)
 
         return tw + torch.exp(phi) * (t0 + self.eta * tw)
 
