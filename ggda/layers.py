@@ -110,15 +110,36 @@ def orbital_norm(psi: Tensor, weights: Tensor, eps: float = 1e-5) -> Tensor:
     return psi / torch.sqrt(norm_squared + eps).unsqueeze(-2)
 
 
+# class FourierPositionalEncoding(nn.Module):
+#     def __init__(
+#         self,
+#         embed_dim: int,
+#         kernel_scale: float,
+#         enhancement: float = 2.0,
+#         activation: Activation = "silu",
+#         n_modes: Optional[int] = None,
+#         ndim: int = 3,
+#     ):
+
+#         super().__init__()
+
+#         self.n_modes = n_modes or embed_dim
+#         assert self.n_modes % 2 == 0, "Embedding dimension must be even"
+
+#         self.mode_lift = nn.Linear(ndim, self.n_modes // 2, bias=False)
+#         nn.init.normal_(self.mode_lift.weight, std=1 / kernel_scale)
+
+#         self.mlp = MLP(self.n_modes, enhancement, activation, out_features=embed_dim)
+
+#     def forward(self, coords: Tensor) -> Tensor:
+#         phases = self.mode_lift(coords)
+#         x = torch.cat([torch.cos(phases), torch.sin(phases)], dim=-1)
+#         return self.mlp(x / sqrt(self.n_modes))
+
+
 class FourierPositionalEncoding(nn.Module):
     def __init__(
-        self,
-        embed_dim: int,
-        kernel_scale: float,
-        enhancement: float = 2.0,
-        activation: Activation = "silu",
-        n_modes: Optional[int] = None,
-        ndim: int = 3,
+        self, embed_dim: int, kernel_scale: float, n_modes: Optional[int] = None, ndim: int = 3
     ):
 
         super().__init__()
@@ -129,12 +150,12 @@ class FourierPositionalEncoding(nn.Module):
         self.mode_lift = nn.Linear(ndim, self.n_modes // 2, bias=False)
         nn.init.normal_(self.mode_lift.weight, std=1 / kernel_scale)
 
-        self.mlp = MLP(self.n_modes, enhancement, activation, out_features=embed_dim)
+        self.linear = nn.Linear(self.n_modes, embed_dim)
 
     def forward(self, coords: Tensor) -> Tensor:
         phases = self.mode_lift(coords)
         x = torch.cat([torch.cos(phases), torch.sin(phases)], dim=-1)
-        return self.mlp(x / sqrt(self.n_modes))
+        return self.linear(x / sqrt(self.n_modes))
 
 
 class RotaryPositionalEncoding(nn.Module):

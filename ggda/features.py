@@ -19,6 +19,10 @@ def t_thomas_fermi(rho: Tensor) -> Tensor:
     return (3 / 10) * (3 * torch.pi**2) ** (2 / 3) * rho ** (5 / 3)
 
 
+def fermi_momentum(rho: Tensor) -> Tensor:
+    return (3 * torch.pi**2 * rho) ** (1 / 3)
+
+
 def lda_x(rho: Tensor) -> Tensor:
     return -(3 / 4) * (3 * rho / torch.pi) ** (1 / 3)
 
