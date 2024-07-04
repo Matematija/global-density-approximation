@@ -429,4 +429,4 @@ class GlobalDensityApprox(nn.Module):
         phi = self.proj(phi).squeeze(dim=-1)
 
         # return torch.tanh(log_cosh(phi))
-        return log_cosh(self.proj(phi))
+        return log_cosh(phi)
