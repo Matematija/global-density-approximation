@@ -71,13 +71,11 @@ class FieldProjection(nn.Module):
 
         self.mlp = GatedMLP(embed_dim, enhancement, activation)
         self.proj = nn.Linear(embed_dim, out_features)
-
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(embed_dim)
 
     def forward(self, phi: Tensor) -> Tensor:
-        phi = self.mlp(self.norm1(phi))
-        return self.proj(self.activation(self.norm2(phi)))
+        phi = self.mlp(self.norm(phi))
+        return self.proj(torch.tanh(phi))
 
 
 class GlobalDensityApprox(nn.Module):
@@ -122,4 +120,6 @@ class GlobalDensityApprox(nn.Module):
         for block in self.blocks:
             phi = block(phi, coords, wrho)
 
-        return self.proj(phi).squeeze(dim=-1)
+        phi = self.proj(phi).squeeze(dim=-1)
+
+        return log_cosh(phi)
