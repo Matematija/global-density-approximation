@@ -100,7 +100,7 @@ class GlobalDensityApprox(nn.Module):
     def eval_tau(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
         phi = self(rho, gamma, coords, weights)
         t0, tw = t_thomas_fermi(rho + 1e-12), t_weisacker(rho + 1e-12, gamma)
-        return tw + torch.exp(phi) * (t0 + tw)
+        return tw + torch.expm1(phi) * (t0 + 1e-3 * tw)
 
     def rotate_coords(self, wrho: Tensor, coords: Tensor) -> Tensor:
 
