@@ -5,32 +5,33 @@ import torch
 from torch import nn
 from torch import Tensor
 
+from .features import mean_and_covariance
 from .utils import Activation, activation_func
 
 
-class MLP(nn.Module):
-    def __init__(
-        self,
-        features: int,
-        enhancement: float,
-        activation: Activation = "gelu",
-        out_features: Optional[int] = None,
-        bias: bool = True,
-    ):
+# class MLP(nn.Module):
+#     def __init__(
+#         self,
+#         features: int,
+#         enhancement: float,
+#         activation: Activation = "gelu",
+#         out_features: Optional[int] = None,
+#         bias: bool = True,
+#     ):
 
-        super().__init__()
+#         super().__init__()
 
-        self.activation = activation_func(activation)
+#         self.activation = activation_func(activation)
 
-        in_features = features
-        out_features = out_features or features
-        width = int(features * enhancement)
+#         in_features = features
+#         out_features = out_features or features
+#         width = int(features * enhancement)
 
-        self.in_linear = nn.Linear(in_features, width, bias=bias)
-        self.out_linear = nn.Linear(width, out_features, bias=bias)
+#         self.in_linear = nn.Linear(in_features, width, bias=bias)
+#         self.out_linear = nn.Linear(width, out_features, bias=bias)
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.out_linear(self.activation(self.in_linear(x)))
+#     def forward(self, x: Tensor) -> Tensor:
+#         return self.out_linear(self.activation(self.in_linear(x)))
 
 
 class GatedMLP(nn.Module):
@@ -73,6 +74,15 @@ def grid_norm(f: Tensor, wrho: Tensor, eps: float = 1e-5) -> Tensor:
 def orbital_norm(psi: Tensor, weights: Tensor, eps: float = 1e-5) -> Tensor:
     norm_squared = torch.einsum("...x,...xi->...i", weights, torch.abs(psi) ** 2)
     return psi / torch.sqrt(norm_squared + eps).unsqueeze(-2)
+
+
+def coordinate_norm(coords: Tensor, weights: Tensor) -> Tensor:
+
+    means, covs = mean_and_covariance(weights.detach(), coords)
+    s2, R = torch.linalg.eigh(covs)
+
+    coords_ = (coords - means.unsqueeze(-2)) @ R.mT.detach()
+    return coords_ / torch.sqrt(s2 + 1e-5).unsqueeze(-2)
 
 
 class FourierPositionalEncoding(nn.Module):

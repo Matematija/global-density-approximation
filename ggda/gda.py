@@ -2,8 +2,9 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding, grid_norm
-from .features import mean_and_covariance, t_weisacker, t_thomas_fermi
+from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding
+from .layers import coordinate_norm, grid_norm
+from .features import t_weisacker, t_thomas_fermi
 from .utils import Activation, activation_func, log_cosh
 
 
@@ -13,7 +14,7 @@ class DensityEmbedding(nn.Module):
         embed_dim: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "silu",
+        activation: Activation = "gelu",
         eps: float = 1e-4,
     ):
 
@@ -42,7 +43,7 @@ class Block(nn.Module):
         embed_dim: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "silu",
+        activation: Activation = "gelu",
     ):
 
         super().__init__()
@@ -62,7 +63,7 @@ class FieldProjection(nn.Module):
         embed_dim: int,
         out_features: int = 1,
         enhancement: float = 2.0,
-        activation: Activation = "silu",
+        activation: Activation = "gelu",
     ):
 
         super().__init__()
@@ -85,7 +86,7 @@ class GlobalDensityApprox(nn.Module):
         n_blocks: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "silu",
+        activation: Activation = "gelu",
     ):
 
         super().__init__()
@@ -97,24 +98,19 @@ class GlobalDensityApprox(nn.Module):
 
         self.proj = FieldProjection(embed_dim, 1, enhancement, activation)
 
-    def eval_tau(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+    def eval_tau(
+        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
+    ) -> Tensor:
+
         phi = self(rho, gamma, coords, weights)
-        t0, tw = t_thomas_fermi(rho + 1e-12), t_weisacker(rho + 1e-12, gamma)
-        return tw + torch.expm1(phi) * (t0 + 1e-3 * tw)
+        t0, tw = t_thomas_fermi(rho + eps), t_weisacker(rho + eps, gamma)
 
-    def rotate_coords(self, wrho: Tensor, coords: Tensor) -> Tensor:
-
-        means, covs = mean_and_covariance(wrho.detach(), coords)
-        s2, R = torch.linalg.eigh(covs)
-
-        coords_ = (coords - means.unsqueeze(-2)) @ R.mT.detach()
-        return coords_ / torch.sqrt(s2 + 1e-5).unsqueeze(-2)
+        return torch.exp(phi) * (torch.cosh(phi) * tw + torch.sinh(phi) * t0)
 
     def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
         wrho = weights * rho
-
-        coords = self.rotate_coords(wrho, coords)
+        coords = coordinate_norm(coords, wrho)
         phi = self.embedding(rho, gamma, coords, wrho)
 
         for block in self.blocks:
