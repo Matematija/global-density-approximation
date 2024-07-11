@@ -107,6 +107,22 @@ class GlobalDensityApprox(nn.Module):
 
         return torch.exp(phi) * (torch.cosh(phi) * tw + torch.sinh(phi) * t0)
 
+    def log_kinetic_energy(
+        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
+    ) -> Tensor:
+
+        phi = self(rho, gamma, coords, weights)
+        t0, tw = t_thomas_fermi(rho + eps), t_weisacker(rho + eps, gamma)
+
+        exponent = 2 * phi
+        shift, _ = torch.max(exponent, axis=-1, keepdim=True)
+        exponent, bias = exponent - shift, torch.exp(-shift)
+
+        safe_exp = torch.exp(exponent)
+        z = 0.5 * weights * ((safe_exp - bias) * t0 + (safe_exp + bias) * tw)
+
+        return shift.squeeze(-1) + torch.log(z.sum(dim=-1))
+
     def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
         wrho = weights * rho
