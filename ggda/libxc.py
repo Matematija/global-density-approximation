@@ -94,7 +94,7 @@ class MGGAFunctional(Function):
         grad_rho_ = _fake_grad_rho(to_numpy(gamma).reshape(-1))
         tau_ = to_numpy(tau).reshape(1, -1)
 
-        rho_data = np.concatenate([rho_, grad_rho_, tau_], axis=0)
+        rho_data = np.concatenate([rho_, grad_rho_, tau_, tau_], axis=0)
         exc, (vrho, vgamma, _, vtau), *__ = libxc.eval_xc(xc, rho_data, spin=0)
 
         exc = torch.tensor(exc, dtype=dtype, device=device).view(shape)
