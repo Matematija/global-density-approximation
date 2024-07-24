@@ -10,7 +10,7 @@ def rescaled_grad(rho: Tensor, gamma: Tensor) -> Tensor:
     return gamma / (4 * (3 * torch.pi**2) ** (2 / 3) * rho ** (8 / 3))
 
 
-def t_weisacker(rho: Tensor, gamma: Tensor) -> Tensor:
+def t_weiszacker(rho: Tensor, gamma: Tensor) -> Tensor:
     return gamma / (8 * rho)
 
 

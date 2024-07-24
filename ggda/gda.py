@@ -4,7 +4,7 @@ from torch import Tensor
 
 from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding
 from .layers import coordinate_norm, grid_norm
-from .features import t_weisacker, t_thomas_fermi
+from .features import t_weiszacker, t_thomas_fermi
 from .utils import Activation, activation_func, log_cosh
 
 
@@ -98,30 +98,27 @@ class GlobalDensityApprox(nn.Module):
 
         self.proj = FieldProjection(embed_dim, 1, enhancement, activation)
 
-    def eval_tau(
+    def log_tau(
         self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
-    ) -> Tensor:
+    ):
 
         phi = self(rho, gamma, coords, weights)
-        t0, tw = t_thomas_fermi(rho + eps), t_weisacker(rho + eps, gamma)
-
-        return torch.exp(phi) * (torch.cosh(phi) * tw + torch.sinh(phi) * t0)
-
-    def log_kinetic_energy(
-        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
-    ) -> Tensor:
-
-        phi = self(rho, gamma, coords, weights)
-        t0, tw = t_thomas_fermi(rho + eps), t_weisacker(rho + eps, gamma)
+        t0, tw = t_thomas_fermi(rho + eps), t_weiszacker(rho + eps, gamma)
 
         exponent = 2 * phi
         shift, _ = torch.max(exponent, axis=-1, keepdim=True)
         exponent, bias = exponent - shift, torch.exp(-shift)
 
         safe_exp = torch.exp(exponent)
-        z = 0.5 * weights * ((safe_exp - bias) * t0 + (safe_exp + bias) * tw)
+        z = 0.5 * ((safe_exp - bias) * t0 + (safe_exp + bias) * tw)
 
-        return shift.squeeze(-1) + torch.log(z.sum(dim=-1))
+        return shift + torch.log(z)
+
+    def eval_tau(
+        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
+    ) -> Tensor:
+
+        return torch.exp(self.log_tau(rho, gamma, coords, weights, eps))
 
     def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
