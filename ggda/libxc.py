@@ -6,129 +6,146 @@ import torch
 from torch.autograd import Function
 from torch import Tensor
 
+from einops import rearrange
+
 from pyscf.dft import libxc
-
-
-# def stack_inputs(x, spin=0):
-
-#     if spin:
-
-#         x_ = rearrange(x, "... x s -> s (... x)")
-
-#         batch_shape = x.shape[:-2]
-#         b = prod(batch_shape)
-#         unstack = lambda x_: rearrange(x_, "s (b x) -> b x s", b=b).view(*batch_shape, -1, 2)
-
-#     else:
-#         shape = x.shape
-#         x_ = rearrange(x, "... x -> (... x)")
-#         unstack = lambda x_: x_.view(*shape)
-
-#     return x_, unstack
 
 
 def to_numpy(x, dtype=np.float64):
     return x.cpu().numpy().astype(dtype)
 
 
-def _fake_grad_rho(gamma, spin=0):
-    grad_x, grad_pad = np.sqrt(gamma), np.zeros_like(gamma)
-    return np.stack([grad_x, grad_pad, grad_pad], axis=spin)
+def _fake_grad_rho(gamma, dim=0):
+    grad_x, grad_pad = torch.sqrt(gamma), torch.zeros_like(gamma)
+    return torch.stack([grad_x, grad_pad, grad_pad], dim=dim)
 
 
-class LDAFunctional(Function):
+def extract_rho(rho_data, xc_type):
+
+    has_spin = rho_data.ndim >= 2 and rho_data.shape[0] == 2
+
+    if not has_spin:
+
+        if xc_type == "LDA" or xc_type == "HF":
+            return rho_data
+        elif xc_type == "GGA" or xc_type == "MGGA":
+            return rho_data[0, :]
+        else:
+            raise KeyError(f"Unsupported XC type: {xc_type}")
+
+    else:
+
+        if xc_type == "LDA" or xc_type == "HF":
+            return rho_data.sum(0)
+        elif xc_type == "GGA" or xc_type == "MGGA":
+            return rho_data[:, 0, :].sum(0)
+        else:
+            raise KeyError(f"Unsupported XC type: {xc_type}")
+
+
+class LibXCEnergy(Function):
     @staticmethod
-    def forward(ctx, xc, rho):
+    def forward(ctx, xc, rho_data):
 
-        shape, dtype, device = rho.shape, rho.dtype, rho.device
+        dtype, device = rho_data.dtype, rho_data.device
 
-        rho_data = to_numpy(rho).reshape(-1)
-        exc, (vrho, *_), *__ = libxc.eval_xc(xc, rho_data)
+        ctx.save_for_backward(rho_data)
+        ctx.xc = xc
 
-        exc = torch.tensor(exc, dtype=dtype, device=device).view(shape)
-        vrho = torch.tensor(vrho, dtype=dtype, device=device).view(shape)
+        rho_data_ = to_numpy(rho_data)
+        exc = libxc.eval_xc_eff(xc, rho_data_, deriv=0)
+        rho = extract_rho(rho_data_, libxc.xc_type(xc))
 
-        ctx.save_for_backward(vrho)
-
-        return rho * exc
-
-    @staticmethod
-    def backward(ctx, d_exc):
-        (vrho,) = ctx.saved_tensors
-        return None, d_exc * vrho
-
-
-class GGAFunctional(Function):
-    @staticmethod
-    def forward(ctx, xc, rho, gamma):
-
-        shape, dtype, device = rho.shape, rho.dtype, rho.device
-
-        rho_ = to_numpy(rho).reshape(1, -1)
-        grad_rho_ = _fake_grad_rho(to_numpy(gamma).reshape(-1))
-
-        rho_data = np.concatenate([rho_, grad_rho_], axis=0)
-        exc, (vrho, vgamma, *_), *__ = libxc.eval_xc(xc, rho_data, spin=0)
-
-        exc = torch.tensor(exc, dtype=dtype, device=device).view(shape)
-        vrho = torch.tensor(vrho, dtype=dtype, device=device).view(shape)
-        vgamma = torch.tensor(vgamma, dtype=dtype, device=device).view(shape)
-
-        ctx.save_for_backward(vrho, vgamma)
-
-        return rho * exc
+        return torch.tensor(rho * exc, dtype=dtype, device=device)
 
     @staticmethod
-    def backward(ctx, d_exc):
-        vrho, vgamma = ctx.saved_tensors
-        return None, d_exc * vrho, d_exc * vgamma
+    def vjp(ctx, d_exc):
+        (rho_data,) = ctx.saved_tensors
+        vxc = LibXCPotential.apply(ctx.xc, rho_data)
+        return None, d_exc * vxc
 
 
-class MGGAFunctional(Function):
+class LibXCPotential(Function):
     @staticmethod
-    def forward(ctx, xc, rho, gamma, tau):
+    def forward(ctx, xc, rho_data):
 
-        shape, dtype, device = rho.shape, rho.dtype, rho.device
+        dtype, device = rho_data.dtype, rho_data.device
 
-        rho_ = to_numpy(rho).reshape(1, -1)
-        grad_rho_ = _fake_grad_rho(to_numpy(gamma).reshape(-1))
-        tau_ = to_numpy(tau).reshape(1, -1)
+        ctx.save_for_backward(rho_data)
+        ctx.xc = xc
 
-        rho_data = np.concatenate([rho_, grad_rho_, tau_, tau_], axis=0)
-        exc, (vrho, vgamma, _, vtau), *__ = libxc.eval_xc(xc, rho_data, spin=0)
-
-        exc = torch.tensor(exc, dtype=dtype, device=device).view(shape)
-        vrho = torch.tensor(vrho, dtype=dtype, device=device).view(shape)
-        vgamma = torch.tensor(vgamma, dtype=dtype, device=device).view(shape)
-        vtau = torch.tensor(vtau, dtype=dtype, device=device).view(shape)
-
-        ctx.save_for_backward(vrho, vgamma, vtau)
-
-        return rho * exc
+        vxc = libxc.eval_xc_eff(xc, to_numpy(rho_data), deriv=1)
+        return torch.tensor(vxc, dtype=dtype, device=device)
 
     @staticmethod
-    def backward(ctx, d_exc):
-        vrho, vgamma, vtau = ctx.saved_tensors
-        return None, d_exc * vrho, d_exc * vgamma, d_exc * vtau
+    def vjp(ctx, d_vxc):
+
+        dtype, device = d_vxc.dtype, d_vxc.device
+        (rho_data,) = ctx.saved_tensors
+
+        fxc = libxc.eval_xc_eff(ctx.xc, to_numpy(rho_data), deriv=2)
+        fxc = torch.tensor(fxc, dtype=dtype, device=device)
+
+        has_spin = rho_data.ndim >= 2 and rho_data.shape[0] == 2
+
+        if not has_spin:
+            out_grad = torch.einsum("ix,ijx->jx", d_vxc, fxc)
+        else:
+            out_grad = torch.einsum("aix,aibjx->bjx", d_vxc, fxc)
+
+        return None, out_grad
+
+
+def stack_rho_data_rks(
+    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None
+) -> tuple[Tensor, tuple[int]]:
+
+    batch_shape = rho.shape
+    rho_data = rho.ravel()
+
+    if gamma is not None:
+        grad_rho_ = _fake_grad_rho(gamma.ravel(), dim=0)
+        rho_data = torch.cat([rho_data.unsqueeze(0), grad_rho_], dim=0)
+
+    if tau is not None:
+        assert gamma is not None, "Gamma must be provided for MGGAs."
+        rho_data = torch.cat([rho_data, tau.ravel().unsqueeze(0)], dim=0)
+
+    return rho_data, batch_shape
+
+
+def stack_rho_data_uks(
+    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None
+) -> tuple[Tensor, tuple[int]]:
+
+    batch_shape = rho.shape[:-1]
+    rho_data = rearrange(rho, "... s -> s (...)")
+
+    if gamma is not None:
+        gamma_ = rearrange(gamma, "... s -> s (...)")
+        grad_rho_ = _fake_grad_rho(gamma_, dim=1)
+        rho_data = torch.cat([rho_data.unsqueeze(1), grad_rho_], dim=1)
+
+    if tau is not None:
+        assert gamma is not None, "Gamma must be provided for MGGAs."
+        tau_ = rearrange(tau, "... s -> s 1 (...)")
+        rho_data = torch.cat([rho_data, tau_], dim=1)
+
+    return rho_data, batch_shape
 
 
 def eval_xc(
-    xc: str, rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None
+    xc: str,
+    rho: Tensor,
+    gamma: Optional[Tensor] = None,
+    tau: Optional[Tensor] = None,
+    *,
+    spin: int = 0,
 ) -> Tensor:
 
-    xc_type = libxc.xc_type(xc)
-
-    if xc_type == "LDA":
-        return LDAFunctional.apply(xc, rho)
-
-    elif xc_type == "GGA":
-        assert gamma is not None, "GGA XC requires gradients but `gamma=None`."
-        return GGAFunctional.apply(xc, rho, gamma)
-
-    elif xc_type == "MGGA":
-        assert gamma is not None, "MGGA XC requires gradients but `gamma=None`."
-        assert tau is not None, "MGGA XC requires tau but `tau=None`."
-        return MGGAFunctional.apply(xc, rho, gamma, tau)
-
+    if not spin:
+        rho_data, batch_shape = stack_rho_data_rks(rho, gamma, tau)
     else:
-        raise ValueError(f"Unsupported XC functional type: {xc_type}")
+        rho_data, batch_shape = stack_rho_data_uks(rho, gamma, tau)
+
+    return LibXCEnergy.apply(xc, rho_data).view(batch_shape)
