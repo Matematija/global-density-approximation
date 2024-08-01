@@ -14,12 +14,7 @@ __all__ = ["eval_xc"]
 
 
 def to_numpy(x, dtype=np.float64):
-    return x.cpu().numpy().astype(dtype)
-
-
-def _fake_grad_rho(gamma, dim=0):
-    grad_x, grad_pad = torch.sqrt(gamma), torch.zeros_like(gamma)
-    return torch.stack([grad_x, grad_pad, grad_pad], dim=dim)
+    return x.detach().cpu().numpy().astype(dtype)
 
 
 def extract_rho(rho_data, xc_type):
@@ -96,6 +91,11 @@ class LibXCPotential(Function):
             out_grad = torch.einsum("aix,aibjx->bjx", d_vxc, fxc)
 
         return None, out_grad
+
+
+def _fake_grad_rho(gamma, dim=0):
+    grad_x, grad_pad = torch.sqrt(gamma), torch.zeros_like(gamma)
+    return torch.stack([grad_x, grad_pad, grad_pad], dim=dim)
 
 
 def stack_rho_data_rks(
