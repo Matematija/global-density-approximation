@@ -5,16 +5,55 @@ import numpy as np
 import torch
 from torch import autograd
 
-from pyscf import gto, dft
+from pyscf import dft
 from pyscf.dft import libxc
 from pyscf.dft.numint import NumInt
 
 from .gda import GlobalDensityApprox
 from .libxc import eval_xc
 
-Molecule = gto.mole.Mole
-KohnShamDFT = dft.RKS
-Grid = dft.gen_grid.Grids
+
+class RKS(dft.rks.RKS):
+    def __init__(self, *args, gda=None, **kwargs):
+
+        super().__init__(*args, **kwargs)
+
+        if gda is not None:
+            self.gda = gda
+
+    @property
+    def gda(self):
+        if isinstance(self._numint, GDANumInt):
+            return self._numint.gda
+        else:
+            return None
+
+    @gda.setter
+    def gda(self, value):
+        self._numint = GDANumInt(value, kinetic=False)
+
+
+class UKS(dft.uks.UKS):
+    def __init__(self, *args, gda=None, **kwargs):
+
+        super().__init__(*args, **kwargs)
+
+        if gda is not None:
+            self.gda = gda
+
+    @property
+    def gda(self):
+        if isinstance(self._numint, GDANumInt):
+            return self._numint.gda
+        else:
+            return None
+
+    @gda.setter
+    def gda(self, value):
+        self._numint = GDANumInt(value, kinetic=False)
+
+
+####################################################################################################
 
 
 class GDANumInt(NumInt):
@@ -79,8 +118,8 @@ class GDANumInt(NumInt):
 
             if not spin:
                 tau = self.gda.eval_tau(rho, gamma, coords, weights, eps=self.eps)
-            else:
 
+            else:
                 rho_a, rho_b = rho.unbind(-1)
                 gamma_a, gamma_b = gamma.unbind(-1)
 
@@ -103,11 +142,7 @@ class GDANumInt(NumInt):
 
         return E, N
 
-    def xc_mat(self, E, dm):
-        (X,) = autograd.grad(E, dm)
-        return (X + X.mT) / 2
-
-    def nr_aux(self, mol, grids, xc_code, dms, spin):
+    def nr_vxc_aux(self, mol, grids, xc_code, dms, spin):
 
         ao, grad_ao, coords, weights = self.process_mol(
             mol, grids, xc_type=libxc.xc_type(xc_code), device=self.device
@@ -115,7 +150,9 @@ class GDANumInt(NumInt):
 
         dm = torch.tensor(dms, requires_grad=True, device=self.device, dtype=torch.float32)
         E, N = self.total_energy(xc_code, dm, ao, grad_ao, coords, weights, spin=spin)
-        X = self.xc_mat(E, dm)
+
+        (X,) = autograd.grad(E, dm)
+        X = (X + X.mT) / 2
 
         return E, N, X
 
@@ -125,7 +162,7 @@ class GDANumInt(NumInt):
 
         del relativity, hermi, max_memory, verbose
 
-        E, N, X = self.nr_aux(mol, grids, xc_code, dms, spin=0)
+        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=0)
 
         nelec = N.detach().item()
         excsum = E.detach().item()
@@ -138,7 +175,7 @@ class GDANumInt(NumInt):
     ):
         del relativity, hermi, max_memory, verbose
 
-        E, N, X = self.nr_aux(mol, grids, xc_code, dms, spin=1)
+        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=1)
 
         nelec = N.detach().cpu().numpy().astype(np.float64)
         excsum = E.detach().item()
@@ -146,42 +183,41 @@ class GDANumInt(NumInt):
 
         return nelec, excsum, vmat
 
+    def nr_rks_fxc(
+        self,
+        mol,
+        grids,
+        xc_code,
+        dm0,
+        dms,
+        relativity=0,
+        hermi=0,
+        rho0=None,
+        vxc=None,
+        fxc=None,
+        max_memory=2000,
+        verbose=None,
+    ):
+        del rho0, vxc, fxc, relativity, hermi, max_memory, verbose
 
-class RKS(dft.rks.RKS):
-    def __init__(self, *args, gda=None, **kwargs):
+        raise NotImplementedError("Second derivatives is not implemented for RKS.")
 
-        super().__init__(*args, **kwargs)
+    def nr_uks_fxc(
+        self,
+        mol,
+        grids,
+        xc_code,
+        dm0,
+        dms,
+        relativity=0,
+        hermi=0,
+        rho0=None,
+        vxc=None,
+        fxc=None,
+        max_memory=2000,
+        verbose=None,
+    ):
 
-        if gda is not None:
-            self.gda = gda
+        del rho0, vxc, fxc, relativity, hermi, max_memory, verbose
 
-    @property
-    def gda(self):
-        if isinstance(self._numint, GDANumInt):
-            return self._numint.gda
-        else:
-            return None
-
-    @gda.setter
-    def gda(self, value):
-        self._numint = GDANumInt(value, kinetic=False)
-
-
-class UKS(dft.uks.UKS):
-    def __init__(self, *args, gda=None, **kwargs):
-
-        super().__init__(*args, **kwargs)
-
-        if gda is not None:
-            self.gda = gda
-
-    @property
-    def gda(self):
-        if isinstance(self._numint, GDANumInt):
-            return self._numint.gda
-        else:
-            return None
-
-    @gda.setter
-    def gda(self, value):
-        self._numint = GDANumInt(value, kinetic=False)
+        raise NotImplementedError("Second derivatives is not implemented for UKS.")

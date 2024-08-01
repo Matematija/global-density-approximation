@@ -10,6 +10,8 @@ from einops import rearrange
 
 from pyscf.dft import libxc
 
+__all__ = ["eval_xc"]
+
 
 def to_numpy(x, dtype=np.float64):
     return x.cpu().numpy().astype(dtype)
