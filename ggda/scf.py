@@ -1,9 +1,11 @@
+from typing import Any
 from warnings import warn
 
 import numpy as np
 
 import torch
 from torch import autograd
+from torch.autograd.functional import hvp
 
 from pyscf import dft
 from pyscf.dft import libxc
@@ -57,7 +59,13 @@ class UKS(dft.uks.UKS):
 
 
 class GDANumInt(NumInt):
-    def __init__(self, gda: GlobalDensityApprox, kinetic: bool = False, eps: float = 1e-12):
+    def __init__(
+        self,
+        gda: GlobalDensityApprox,
+        kinetic: bool = False,
+        eps: float = 1e-12,
+        dtype: Any = torch.float32,
+    ):
 
         super().__init__()
 
@@ -69,11 +77,13 @@ class GDANumInt(NumInt):
             self.gda = gda.cpu().eval()
             self.device = torch.device("cpu")
 
-        self.eps = eps
         self.kinetic = kinetic
+        self.eps = eps
+        self.dtype = dtype
+
         self.gda.zero_grad()
 
-    def process_mol(self, mol, grids, xc_type, device=None, dtype=torch.float32):
+    def process_mol(self, mol, grids, xc_type):
 
         if grids.coords is None:
             grids.build(with_non0tab=True)
@@ -83,19 +93,19 @@ class GDANumInt(NumInt):
 
         if xc_type == "LDA" and not self.kinetic:
             ao_vals = self.eval_ao(mol, grids.coords, deriv=0, cutoff=grids.cutoff)
-            ao = torch.tensor(ao_vals, device=device, dtype=dtype)
+            ao = torch.tensor(ao_vals, device=self.device, dtype=self.dtype)
             grad_ao = None
         else:
             ao_vals = self.eval_ao(mol, grids.coords, deriv=1, cutoff=grids.cutoff)
-            ao = torch.tensor(ao_vals[0], device=device, dtype=dtype)
-            grad_ao = torch.tensor(ao_vals[1:4], device=device, dtype=dtype)
+            ao = torch.tensor(ao_vals[0], device=self.device, dtype=self.dtype)
+            grad_ao = torch.tensor(ao_vals[1:4], device=self.device, dtype=self.dtype)
 
-        coords = torch.tensor(grids.coords, device=device, dtype=dtype)
-        weights = torch.tensor(grids.weights, device=device, dtype=dtype)
+        coords = torch.tensor(grids.coords, device=self.device, dtype=self.dtype)
+        weights = torch.tensor(grids.weights, device=self.device, dtype=self.dtype)
 
         return ao, grad_ao, coords, weights
 
-    def density_inputs(self, dm, ao, grad_ao, xc_type):
+    def density_inputs(self, dm, ao, grad_ao, xc_type="LDA"):
 
         rho = torch.einsum("...mn,xm,xn->x...", dm, ao, ao)
 
@@ -107,12 +117,10 @@ class GDANumInt(NumInt):
 
         return rho, gamma
 
-    def total_energy(self, xc_code, dm, ao, grad_ao, coords, weights, spin=0):
+    def total_energy(self, xc_code, rho, gamma, coords, weights, spin=0, xc_type=None):
 
-        xc_type = libxc.xc_type(xc_code)
-
-        rho, gamma = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
-        tau = None
+        if xc_type is None:
+            xc_type = libxc.xc_type(xc_code)
 
         if self.kinetic or xc_type == "MGGA":
 
@@ -128,6 +136,9 @@ class GDANumInt(NumInt):
 
                 tau = torch.stack([tau_a, tau_b], dim=-1)
 
+        else:
+            tau = None
+
         E = weights @ eval_xc(xc_code, rho, gamma, tau, spin=spin)
 
         if self.kinetic:
@@ -137,22 +148,23 @@ class GDANumInt(NumInt):
 
             E = E + weights @ tau
 
-        with torch.no_grad():
-            N = weights @ rho
-
-        return E, N
+        return E
 
     def nr_vxc_aux(self, mol, grids, xc_code, dms, spin):
 
-        ao, grad_ao, coords, weights = self.process_mol(
-            mol, grids, xc_type=libxc.xc_type(xc_code), device=self.device
-        )
+        xc_type = libxc.xc_type(xc_code)
 
-        dm = torch.tensor(dms, requires_grad=True, device=self.device, dtype=torch.float32)
-        E, N = self.total_energy(xc_code, dm, ao, grad_ao, coords, weights, spin=spin)
+        ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
+        dm = torch.tensor(dms, requires_grad=True, device=self.device, dtype=self.dtype)
+
+        rho, gamma = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
+        E = self.total_energy(xc_code, rho, gamma, coords, weights, spin=spin, xc_type=xc_type)
 
         (X,) = autograd.grad(E, dm)
         X = (X + X.mT) / 2
+
+        with torch.no_grad():
+            N = weights @ rho
 
         return E, N, X
 
@@ -183,6 +195,14 @@ class GDANumInt(NumInt):
 
         return nelec, excsum, vmat
 
+    def cache_xc_kernel(self, mol, grids, xc_code, mo_coeff, mo_occ, spin=0, max_memory=2000):
+
+        self.dm0 = np.einsum("a,ma,na->mn", mo_occ, mo_coeff, mo_coeff)
+
+        return super().cache_xc_kernel(
+            mol, grids, xc_code, mo_coeff, mo_occ, spin=spin, max_memory=max_memory
+        )
+
     def nr_rks_fxc(
         self,
         mol,
@@ -198,9 +218,25 @@ class GDANumInt(NumInt):
         max_memory=2000,
         verbose=None,
     ):
+
+        if dm0 is None:
+            dm0 = self.dm0
+
         del rho0, vxc, fxc, relativity, hermi, max_memory, verbose
 
-        raise NotImplementedError("Second derivatives is not implemented for RKS.")
+        xc_type = libxc.xc_type(xc_code)
+
+        ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
+
+        dm0 = torch.tensor(dm0, device=self.device, dtype=self.dtype)
+        dms = torch.tensor(dms, device=self.device, dtype=self.dtype)
+
+        def eval_energy(dm):
+            rho, gamma = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
+            return self.total_energy(xc_code, rho, gamma, coords, weights, spin=0, xc_type=xc_type)
+
+        hvps = [hvp(eval_energy, dm0, dm)[1] for dm in dms]
+        return np.stack([h.cpu().numpy() for h in hvps], axis=0)
 
     def nr_uks_fxc(
         self,
