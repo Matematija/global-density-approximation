@@ -99,45 +99,59 @@ def _fake_grad_rho(gamma, dim=0):
 
 
 def stack_rho_data_rks(
-    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None
+    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None, deriv_order: int = 0
 ) -> tuple[Tensor, tuple[int]]:
 
     batch_shape = rho.shape
     rho_data = rho.ravel()
 
-    if gamma is not None:
+    if deriv_order >= 1:
+        assert gamma is not None, "Gamma must be provided for GGAs and MGGA."
         grad_rho_ = _fake_grad_rho(gamma.ravel(), dim=0)
         rho_data = torch.cat([rho_data.unsqueeze(0), grad_rho_], dim=0)
 
-    if tau is not None:
-        assert gamma is not None, "Gamma must be provided for MGGAs."
+    if deriv_order >= 2:
+        assert tau is not None, "Tau must be provided for MGGAs."
         rho_data = torch.cat([rho_data, tau.ravel().unsqueeze(0)], dim=0)
 
     return rho_data, batch_shape
 
 
 def stack_rho_data_uks(
-    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None
+    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None, deriv_order: int = 0
 ) -> tuple[Tensor, tuple[int]]:
 
     batch_shape = rho.shape[:-1]
     rho_data = rearrange(rho, "... s -> s (...)")
 
-    if gamma is not None:
+    if deriv_order >= 1:
+        assert gamma is not None, "Gamma must be provided for GGAs and MGGA."
         gamma_ = rearrange(gamma, "... s -> s (...)")
         grad_rho_ = _fake_grad_rho(gamma_, dim=1)
         rho_data = torch.cat([rho_data.unsqueeze(1), grad_rho_], dim=1)
 
-    if tau is not None:
-        assert gamma is not None, "Gamma must be provided for MGGAs."
+    if deriv_order >= 2:
+        assert tau is not None, "Tau must be provided for MGGAs."
         tau_ = rearrange(tau, "... s -> s 1 (...)")
         rho_data = torch.cat([rho_data, tau_], dim=1)
 
     return rho_data, batch_shape
 
 
+def get_deriv_order(xc_type: str) -> int:
+
+    if xc_type == "HF" or xc_type == "LDA":
+        return 0
+    elif xc_type == "GGA":
+        return 1
+    elif xc_type == "MGGA":
+        return 2
+    else:
+        raise ValueError(f"Unsupported XC type: {xc_type}")
+
+
 def eval_xc(
-    xc: str,
+    xc_code: str,
     rho: Tensor,
     gamma: Optional[Tensor] = None,
     tau: Optional[Tensor] = None,
@@ -145,9 +159,11 @@ def eval_xc(
     spin: int = 0,
 ) -> Tensor:
 
-    if not spin:
-        rho_data, batch_shape = stack_rho_data_rks(rho, gamma, tau)
-    else:
-        rho_data, batch_shape = stack_rho_data_uks(rho, gamma, tau)
+    deriv_order = get_deriv_order(libxc.xc_type(xc_code))
 
-    return LibXCEnergy.apply(xc, rho_data).view(batch_shape)
+    if not spin:
+        rho_data, batch_shape = stack_rho_data_rks(rho, gamma, tau, deriv_order)
+    else:
+        rho_data, batch_shape = stack_rho_data_uks(rho, gamma, tau, deriv_order)
+
+    return LibXCEnergy.apply(xc_code, rho_data).view(batch_shape)
