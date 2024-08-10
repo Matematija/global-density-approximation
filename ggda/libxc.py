@@ -94,7 +94,8 @@ class LibXCPotential(Function):
 
 
 def _fake_grad_rho(gamma, dim=0):
-    grad_x, grad_pad = torch.sqrt(gamma), torch.zeros_like(gamma)
+    grad_x = torch.sqrt(gamma.clip(min=1e-16))
+    grad_pad = torch.zeros_like(gamma)
     return torch.stack([grad_x, grad_pad, grad_pad], dim=dim)
 
 

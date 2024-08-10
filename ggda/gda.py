@@ -1,11 +1,13 @@
+from typing import Optional
+
 import torch
 from torch import nn
 from torch import Tensor
 
 from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding
 from .layers import coordinate_norm, grid_norm
-from .features import t_weiszacker, t_thomas_fermi
-from .utils import Activation, activation_func, log_cosh
+from .features import t_thomas_fermi
+from .utils import Activation, activation_func
 
 
 class DensityEmbedding(nn.Module):
@@ -98,27 +100,9 @@ class GlobalDensityApprox(nn.Module):
 
         self.proj = FieldProjection(embed_dim, 1, enhancement, activation)
 
-    def log_tau(
-        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
-    ):
-
+    def tau_pauli(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
         phi = self(rho, gamma, coords, weights)
-        t0, tw = t_thomas_fermi(rho + eps), t_weiszacker(rho + eps, gamma)
-
-        exponent = 2 * phi
-        shift, _ = torch.max(exponent, axis=-1, keepdim=True)
-        exponent, bias = exponent - shift, torch.exp(-shift)
-
-        safe_exp = torch.exp(exponent)
-        z = 0.5 * ((safe_exp - bias) * t0 + (safe_exp + bias) * tw)
-
-        return shift + torch.log(z)
-
-    def eval_tau(
-        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eps: float = 0.0
-    ) -> Tensor:
-
-        return torch.exp(self.log_tau(rho, gamma, coords, weights, eps))
+        return torch.exp(phi) * t_thomas_fermi(rho)
 
     def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
@@ -129,6 +113,4 @@ class GlobalDensityApprox(nn.Module):
         for block in self.blocks:
             phi = block(phi, coords, wrho)
 
-        phi = self.proj(phi).squeeze(dim=-1)
-
-        return log_cosh(phi)
+        return self.proj(phi).squeeze(dim=-1)
