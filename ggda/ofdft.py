@@ -1,15 +1,34 @@
-from typing import Optional
-
 import numpy as np
 
-from scipy.linalg import fractional_matrix_power
+from scipy.linalg import solve
 from scipy.optimize import minimize
 
-from .scf import RKS, GDANumInt
+from pyscf.dft.rks import RKS
+
+from .gda import GlobalDensityApprox
+from .scf import GDANumInt
+
+
+def _get_iprint(verbose):
+
+    if verbose == 0:
+        return -1
+    elif verbose == 1 and verbose < 2:
+        return 0
+    elif verbose >= 2 and verbose < 4:
+        return 10
+    elif verbose >= 4 and verbose < 6:
+        return 1
+    elif verbose >= 6 and verbose < 8:
+        return 99
+    elif verbose >= 8:
+        return 100
+    else:
+        return 1
 
 
 class OrbitalFree(RKS):
-    def __init__(self, *args, kef=None, kind="of", **kwargs):
+    def __init__(self, *args, kef=None, gda=None, eps=1e-12, **kwargs):
 
         super().__init__(*args, **kwargs)
 
@@ -17,41 +36,70 @@ class OrbitalFree(RKS):
             self.kef = kef
         else:
             raise ValueError(
-                f"Invalid value for `kef`. Must be a string or callable, got {type(kef)}."
+                f"Invalid value for `kef`. Must be a string or `None`, got {type(kef)}."
             )
 
-        self.kind = kind
-        self.of_reset()
+        if gda is not None:
+            self.gda = gda
 
-    @classmethod
-    def from_rks(cls, ks: RKS, kef=None, kind="of"):
-        return cls(
-            ks.mol,
-            ks.xc,
-            kef=kef,
-            kind=kind,
-            max_cycle=ks.max_cycle,
-            conv_tol=ks.conv_tol,
-            verbose=ks.verbose,
-        )
+        self.eps = eps
+        self.grad_hook = None
+        self.of_reset()
 
     @property
     def gda(self):
-        return self._numint.gda
+        if isinstance(self._numint, GDANumInt):
+            return self._numint.gda
+        else:
+            return None
 
     @gda.setter
     def gda(self, value):
-        self._numint = GDANumInt(value, kinetic=True, xc=True)
 
-    def of_init(self):
-        # self._h1e = self.get_hcore()
-        self._h1e = self.mol.intor("int1e_nuc")
-        self._ovlp = self.get_ovlp()
+        if not isinstance(value, GlobalDensityApprox):
+            raise TypeError(f"Expected a `GlobalDensityApprox` object, got {type(value)}.")
 
-    def of_init_guess(self):
-        z = np.ones(self.mol.nao) / np.sqrt(self.mol.nao)
-        h = fractional_matrix_power(self._ovlp, -0.5)
-        return h @ z
+        self._numint = GDANumInt(value, kinetic=True)
+
+    @property
+    def chemical_potential(self):
+
+        if self.mo_energy is None:
+            return None
+        else:
+            return self.mo_energy[0]
+
+    @property
+    def s1e(self):
+
+        if self._s1e is None:
+            self._s1e = self.get_ovlp()
+
+        return self._s1e
+
+    @property
+    def h1e(self):
+
+        if self._h1e is None:
+            self._h1e = self.get_hcore()
+
+        return self._h1e
+
+    def get_init_guess(self, *args, **kwargs):
+
+        dm0 = super().get_init_guess(*args, **kwargs)
+
+        self.grids.build()
+        coords, weights = self.grids.coords, self.grids.weights
+
+        ao = self._numint.eval_ao(self.mol, coords, deriv=0, cutoff=self.grids.cutoff)
+        rho0 = self._numint.eval_rho(self.mol, ao, dm0, xctype="LDA")
+        p0 = rho0 / self.mol.nelectron
+
+        s1e = self.mol.intor_symmetric("int1e_ovlp")
+        b = (weights * np.sqrt(p0)) @ ao
+
+        return solve(s1e, b, assume_a="sym")
 
     def get_veff(self, *args, **kwargs):
 
@@ -66,111 +114,74 @@ class OrbitalFree(RKS):
 
             return veff
 
-    def of_energy_value_and_grad(self, c):
+    def energy(self, a):
+
+        sa = self.s1e @ a
+        asa = a @ sa
 
         N = self.mol.nelectron
-        dm = np.outer(c, N * c)
+        dm = N * np.outer(a, a) / asa
 
         veff = self.get_veff(self.mol, dm)
-        heff = self._h1e + veff
-        v = 2 * N * heff @ c
+        E = self.energy_tot(dm, self.h1e, veff)
+        heff = self.get_fock(self.h1e, self.s1e, veff, dm)
 
-        E = self.energy_tot(dm, self._h1e, veff)
+        ha = heff @ a
+        aha = a @ ha
+        mu = aha / asa
+        grad = 2 * N * mu * (ha / aha - sa / asa)
 
-        self._last_energy = E
-        self._last_chem_pot = self.chemical_potential(c, heff)
+        if self.grad_hook is not None:
+            grad = self.grad_hook(grad)
 
-        return E, v
+        return E, grad, mu
 
-    def of_constraint(self, c):
-        return c @ self._ovlp @ c - 1.0
-
-    def of_constraint_jac(self, c):
-        return 2 * self._ovlp @ c
-
-    def of_callback(self, _):
-
-        self._iteration += 1
-
-        if self.verbose >= 4:
-            i = self._iteration
-            E = self._last_energy
-            mu = self._last_chem_pot
-
-            print(f"Iteration {i} | Energy: {E:.6f} | Chemical Potential: {mu:.6f}")
-
-    def chemical_potential(self, c=None, heff=None):
-
-        if c is None:
-            c = self.mo_coeff[:, 0]
-
-        if heff is None:
-
-            N = self.mol.nelectron
-            dm = np.outer(c, N * c)
-
-            h1e = self.mol.intor("int1e_nuc")
-            veff = self.get_veff(self.mol, dm)
-            heff = h1e + veff
-
-        return c @ heff @ c
-
-    def of_optimize(self, c0=None):
+    def scf(self, c0=None):
 
         self.dump_flags()
         self.build(self.mol)
-        self.of_init()
 
-        c0 = c0 or self.of_init_guess()
-        constraints = [{"type": "eq", "fun": self.of_constraint, "jac": self.of_constraint_jac}]
-        options = {"maxiter": self.max_cycle, "disp": self.verbose >= 1}
+        if c0 is None:
+            c0 = self.get_init_guess()
+
+        options = {
+            "maxiter": self.max_cycle,
+            "iprint": _get_iprint(self.verbose),
+            "ftol": self.conv_tol * 1e-2,
+        }
+
+        if self.verbose >= 4:
+            E0, _, _ = self.energy(c0)
+            print(f"Initial Energy: {E0:.6f}")
+
+        def energy_value_and_grad(a):
+            E, grad, _ = self.energy(a)
+            return E, grad
 
         res = minimize(
-            self.of_energy_value_and_grad,
+            energy_value_and_grad,
             x0=c0,
-            method="SLSQP",
+            method="L-BFGS-B",
             jac=True,
-            constraints=constraints,
-            callback=self.of_callback,
             tol=self.conv_tol,
             options=options,
         )
 
-        mu = self.chemical_potential(res.x)
+        c = res.x / np.sqrt(res.x @ self.s1e @ res.x)
+        _, _, mu = self.energy(res.x)
 
         self.converged = res.success
         self.e_tot = res.fun
         self.mo_energy = np.array([mu])
-        self.mo_coeff = res.x[:, None]
+        self.mo_coeff = np.expand_dims(c, axis=-1)
         self.mo_occ = np.array([self.mol.nelectron])
-
-        self.of_reset()
 
         return self.e_tot
 
     def of_reset(self):
-        self._iteration = 0
-        self._last_energy = None
-        self._last_chem_pot = None
-        self._ovlp = None
+        self._s1e = None
         self._h1e = None
 
-    def scf(self, *args, kind=None, **kwargs):
-
-        if kind is None:
-            kind = self.kind
-
-        kind = kind.lower().strip()
-
-        if kind == "ks":
-            return super().scf(*args, **kwargs)
-        elif kind == "of":
-            return self.of_optimize(*args, **kwargs)
-        else:
-            raise ValueError(f"Invalid kind: {kind}")
-
-
-def orbital_free(ks: RKS, kef: Optional[str] = None) -> OrbitalFree:
-    of = OrbitalFree.from_rks(ks, kef=kef)
-    of.kernel()
-    return of
+    def reset(self):
+        super().reset()
+        self.of_reset()
