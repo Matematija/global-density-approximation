@@ -93,48 +93,48 @@ class LibXCPotential(Function):
         return None, out_grad
 
 
-def _fake_grad_rho(gamma, dim=0):
-    grad_x = torch.sqrt(gamma.clip(min=1e-30))
-    grad_pad = torch.zeros_like(gamma)
-    return torch.stack([grad_x, grad_pad, grad_pad], dim=dim)
-
-
 def stack_rho_data_rks(
-    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None, deriv_order: int = 0
+    rho: Tensor,
+    grad_rho: Optional[Tensor] = None,
+    tau: Optional[Tensor] = None,
+    deriv_order: int = 0,
 ) -> tuple[Tensor, tuple[int]]:
 
     batch_shape = rho.shape
     rho_data = rho.ravel()
 
     if deriv_order >= 1:
-        assert gamma is not None, "Gamma must be provided for GGAs and MGGA."
-        grad_rho_ = _fake_grad_rho(gamma.ravel(), dim=0)
-        rho_data = torch.cat([rho_data.unsqueeze(0), grad_rho_], dim=0)
+        assert grad_rho is not None, "`grad_rho` must be provided for GGAs and MGGA."
+        grad_rho = rearrange(grad_rho, "... i -> i (...)")
+        rho_data = torch.cat([rho_data.unsqueeze(0), grad_rho], dim=0)
 
     if deriv_order >= 2:
         assert tau is not None, "Tau must be provided for MGGAs."
-        rho_data = torch.cat([rho_data, tau.ravel().unsqueeze(0)], dim=0)
+        tau = rearrange(tau, "... -> 1 (...)")
+        rho_data = torch.cat([rho_data, tau], dim=0)
 
     return rho_data, batch_shape
 
 
 def stack_rho_data_uks(
-    rho: Tensor, gamma: Optional[Tensor] = None, tau: Optional[Tensor] = None, deriv_order: int = 0
+    rho: Tensor,
+    grad_rho: Optional[Tensor] = None,
+    tau: Optional[Tensor] = None,
+    deriv_order: int = 0,
 ) -> tuple[Tensor, tuple[int]]:
 
     batch_shape = rho.shape[:-1]
     rho_data = rearrange(rho, "... s -> s (...)")
 
     if deriv_order >= 1:
-        assert gamma is not None, "Gamma must be provided for GGAs and MGGA."
-        gamma_ = rearrange(gamma, "... s -> s (...)")
-        grad_rho_ = _fake_grad_rho(gamma_, dim=1)
-        rho_data = torch.cat([rho_data.unsqueeze(1), grad_rho_], dim=1)
+        assert grad_rho is not None, "Gamma must be provided for GGAs and MGGA."
+        grad_rho = rearrange(grad_rho, "... i s -> s i (...)")
+        rho_data = torch.cat([rho_data.unsqueeze(1), grad_rho], dim=1)
 
     if deriv_order >= 2:
         assert tau is not None, "Tau must be provided for MGGAs."
-        tau_ = rearrange(tau, "... s -> s 1 (...)")
-        rho_data = torch.cat([rho_data, tau_], dim=1)
+        tau = rearrange(tau, "... s -> s 1 (...)")
+        rho_data = torch.cat([rho_data, tau], dim=1)
 
     return rho_data, batch_shape
 
@@ -154,7 +154,7 @@ def get_deriv_order(xc_type: str) -> int:
 def eval_xc(
     xc_code: str,
     rho: Tensor,
-    gamma: Optional[Tensor] = None,
+    grad_rho: Optional[Tensor] = None,
     tau: Optional[Tensor] = None,
     *,
     spin: int = 0,
@@ -163,8 +163,8 @@ def eval_xc(
     deriv_order = get_deriv_order(libxc.xc_type(xc_code))
 
     if not spin:
-        rho_data, batch_shape = stack_rho_data_rks(rho, gamma, tau, deriv_order)
+        rho_data, batch_shape = stack_rho_data_rks(rho, grad_rho, tau, deriv_order)
     else:
-        rho_data, batch_shape = stack_rho_data_uks(rho, gamma, tau, deriv_order)
+        rho_data, batch_shape = stack_rho_data_uks(rho, grad_rho, tau, deriv_order)
 
     return LibXCEnergy.apply(xc_code, rho_data).view(batch_shape)
