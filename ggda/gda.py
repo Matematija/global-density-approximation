@@ -1,7 +1,6 @@
-from typing import Optional
-
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch import Tensor
 
 from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding
@@ -30,7 +29,9 @@ class DensityEmbedding(nn.Module):
         self.out_linear = nn.Linear(width, embed_dim)
         self.coord_emb = FourierPositionalEncoding(width, kernel_scale)
 
-    def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+    def forward(self, rho: Tensor, grad_rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+
+        gamma = torch.sum(grad_rho**2, dim=-1)
 
         x = torch.stack([rho, gamma], dim=-1)
         x = grid_norm(torch.log(x + self.eps), weights)
@@ -100,17 +101,20 @@ class GlobalDensityApprox(nn.Module):
 
         self.proj = FieldProjection(embed_dim, 1, enhancement, activation)
 
-    def tau_pauli(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-        phi = self(rho, gamma, coords, weights)
-        return torch.exp(phi) * t_thomas_fermi(rho)
+    def tau_pauli(
+        self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor, eta: float = 1e-3
+    ) -> Tensor:
 
-    def forward(self, rho: Tensor, gamma: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+        alpha = self(rho, gamma, coords, weights)
+        return alpha * (t_thomas_fermi(rho) + eta)
+
+    def forward(self, rho: Tensor, grad_rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
 
         wrho = weights * rho
         coords = coordinate_norm(coords, wrho)
-        phi = self.embedding(rho, gamma, coords, wrho)
+        phi = self.embedding(rho, grad_rho, coords, wrho)
 
         for block in self.blocks:
             phi = block(phi, coords, wrho)
 
-        return self.proj(phi).squeeze(dim=-1)
+        return F.softplus(self.proj(phi)).squeeze(dim=-1)
