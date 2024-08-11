@@ -59,26 +59,19 @@ class UKS(dft.uks.UKS):
 
 
 class GDANumInt(NumInt):
-    def __init__(
-        self,
-        gda: GlobalDensityApprox,
-        kinetic: bool = False,
-        eps: float = 1e-12,
-        dtype: Any = torch.float32,
-    ):
+    def __init__(self, gda: GlobalDensityApprox, kinetic: bool = False, dtype: Any = torch.float64):
 
         super().__init__()
 
         if torch.cuda.is_available():
-            self.gda = gda.cuda().eval()
             self.device = torch.device("cuda")
         else:
             warn("CUDA is not available. Using CPU.")
-            self.gda = gda.cpu().eval()
             self.device = torch.device("cpu")
 
+        self.gda = gda.eval().to(device=self.device, dtype=dtype)
+
         self.kinetic = kinetic
-        self.eps = eps
         self.dtype = dtype
 
         self.gda.zero_grad()
@@ -105,19 +98,18 @@ class GDANumInt(NumInt):
 
         return ao, grad_ao, coords, weights
 
-    def density_inputs(self, dm, ao, grad_ao, xc_type="LDA"):
+    def density_inputs(self, dm, ao, grad_ao=None, xc_type="LDA"):
 
         rho = torch.einsum("...mn,xm,xn->x...", dm, ao, ao)
 
         if xc_type in ["GGA", "MGGA"] or self.kinetic:
             grad_rho = 2 * torch.einsum("...mn,xm,cxn->x...c", dm, ao, grad_ao)
-            gamma = torch.sum(grad_rho**2, dim=-1)
         else:
-            gamma = None
+            grad_rho = None
 
-        return rho, gamma
+        return rho, grad_rho
 
-    def total_energy(self, xc_code, rho, gamma, coords, weights, spin=0, xc_type=None):
+    def xc_energy(self, xc_code, rho, grad_rho, coords, weights, spin=0, xc_type=None):
 
         if xc_type is None:
             xc_type = libxc.xc_type(xc_code)
@@ -125,26 +117,35 @@ class GDANumInt(NumInt):
         if self.kinetic or xc_type == "MGGA":
 
             if not spin:
-                tau = self.gda.eval_tau(rho, gamma, coords, weights, eps=self.eps)
+                tau_p = self.gda.tau_pauli(rho, grad_rho, coords, weights, eps=self.eps)
 
             else:
-                rho_a, rho_b = rho.unbind(-1)
-                gamma_a, gamma_b = gamma.unbind(-1)
+                raise NotImplementedError("UKS not working yet.")
 
-                tau_a = self.gda.eval_tau(rho_a, gamma_a, coords, weights, eps=self.eps)
-                tau_b = self.gda.eval_tau(rho_b, gamma_b, coords, weights, eps=self.eps)
+                # rho_a, rho_b = rho.unbind(-1)
+                # grad_rho_a, grad_rho_b = gamma.unbind(-1)
 
-                tau = torch.stack([tau_a, tau_b], dim=-1)
+                # tau_p_a = self.gda.eval_tau(rho_a, grad_rho_a, coords, weights, eps=self.eps)
+                # tau_p_b = self.gda.eval_tau(rho_b, grad_rho_b, coords, weights, eps=self.eps)
+
+                # tau_p = torch.stack([tau_p_a, tau_p_b], dim=-1)
+
+        if xc_type == "MGGA":
+
+            if not spin:
+                tau = tau_p + eval_xc("GGA_K_VW", rho, grad_rho, spin=0)
+            else:
+                raise NotImplementedError("Meta-GGA is not implemented for UKS.")
 
         else:
             tau = None
 
-        E = weights @ eval_xc(xc_code, rho, gamma, tau, spin=spin)
+        E = weights @ eval_xc(xc_code, rho, grad_rho, tau, spin=spin)
 
         if self.kinetic:
 
             if spin:
-                tau = tau.sum(dim=-1)
+                tau_p = tau_p.sum(dim=-1)
 
             E = E + weights @ tau
 
@@ -157,8 +158,8 @@ class GDANumInt(NumInt):
         ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
         dm = torch.tensor(dms, requires_grad=True, device=self.device, dtype=self.dtype)
 
-        rho, gamma = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
-        E = self.total_energy(xc_code, rho, gamma, coords, weights, spin=spin, xc_type=xc_type)
+        rho, grad_rho = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
+        E = self.xc_energy(xc_code, rho, grad_rho, coords, weights, spin=spin, xc_type=xc_type)
 
         (X,) = autograd.grad(E, dm)
         X = (X + X.mT) / 2
@@ -233,7 +234,7 @@ class GDANumInt(NumInt):
 
         def eval_energy(dm):
             rho, gamma = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
-            return self.total_energy(xc_code, rho, gamma, coords, weights, spin=0, xc_type=xc_type)
+            return self.xc_energy(xc_code, rho, gamma, coords, weights, spin=0, xc_type=xc_type)
 
         hvps = [hvp(eval_energy, dm0, dm)[1] for dm in dms]
         return np.stack([h.cpu().numpy() for h in hvps], axis=0)
