@@ -12,6 +12,7 @@ from pyscf.dft import libxc
 from pyscf.dft.numint import NumInt
 
 from .gda import GlobalDensityApprox
+from .features import log_t_weiszacker
 from .libxc import eval_xc
 
 
@@ -59,7 +60,13 @@ class UKS(dft.uks.UKS):
 
 
 class GDANumInt(NumInt):
-    def __init__(self, gda: GlobalDensityApprox, kinetic: bool = False, dtype: Any = torch.float64):
+    def __init__(
+        self,
+        gda: GlobalDensityApprox,
+        kinetic: bool = False,
+        eps: float = 0.0,
+        dtype: Any = torch.float64,
+    ):
 
         super().__init__()
 
@@ -72,6 +79,7 @@ class GDANumInt(NumInt):
         self.gda = gda.eval().to(device=self.device, dtype=dtype)
 
         self.kinetic = kinetic
+        self.eps = eps
         self.dtype = dtype
 
         self.gda.zero_grad()
@@ -117,23 +125,18 @@ class GDANumInt(NumInt):
         if self.kinetic or xc_type == "MGGA":
 
             if not spin:
-                tau_p = self.gda.tau_pauli(rho, grad_rho, coords, weights, eps=self.eps)
-
+                log_tau_p = self.gda.log_tau(
+                    rho, grad_rho, coords, weights, pauli=True, eps=self.eps
+                )
             else:
                 raise NotImplementedError("UKS not working yet.")
-
-                # rho_a, rho_b = rho.unbind(-1)
-                # grad_rho_a, grad_rho_b = gamma.unbind(-1)
-
-                # tau_p_a = self.gda.eval_tau(rho_a, grad_rho_a, coords, weights, eps=self.eps)
-                # tau_p_b = self.gda.eval_tau(rho_b, grad_rho_b, coords, weights, eps=self.eps)
-
-                # tau_p = torch.stack([tau_p_a, tau_p_b], dim=-1)
 
         if xc_type == "MGGA":
 
             if not spin:
-                tau = tau_p + eval_xc("GGA_K_VW", rho, grad_rho, spin=0)
+                gamma = torch.sum(grad_rho**2, dim=-1)
+                log_tw = log_t_weiszacker(rho, gamma, eps=self.eps)
+                tau = torch.logaddexp(log_tw, log_tau_p).exp()
             else:
                 raise NotImplementedError("Meta-GGA is not implemented for UKS.")
 
@@ -144,10 +147,12 @@ class GDANumInt(NumInt):
 
         if self.kinetic:
 
-            if spin:
-                tau_p = tau_p.sum(dim=-1)
+            if not spin:
+                Tp = torch.logsumexp(torch.log(weights) + log_tau_p, dim=-1).exp()
+            else:
+                raise NotImplementedError("UKS not working yet.")
 
-            E = E + weights @ tau
+            E = E + Tp
 
         return E
 
