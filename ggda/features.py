@@ -1,4 +1,5 @@
 from typing import Optional
+from math import log, pi
 
 import torch
 from torch import Tensor
@@ -14,8 +15,17 @@ def t_weiszacker(rho: Tensor, gamma: Tensor) -> Tensor:
     return gamma / (8 * rho)
 
 
+def log_t_weiszacker(rho: Tensor, gamma: Tensor, eps: float = 0.0) -> Tensor:
+    return torch.log(gamma.clip(min=eps)) - torch.log(8 * rho.clip(min=eps))
+
+
 def t_thomas_fermi(rho: Tensor) -> Tensor:
     return (3 / 10) * (3 * torch.pi**2) ** (2 / 3) * rho ** (5 / 3)
+
+
+def log_t_thomas_fermi(rho: Tensor, eps: float = 0.0) -> Tensor:
+    log_const = log((3 / 10) * (3 * pi**2) ** (2 / 3))
+    return log_const + (5 / 3) * torch.log(rho.clip(min=eps))
 
 
 def fermi_momentum(rho: Tensor) -> Tensor:
