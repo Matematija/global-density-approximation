@@ -1,5 +1,6 @@
 from typing import Any
 from warnings import warn
+from copy import deepcopy
 
 import numpy as np
 
@@ -76,7 +77,7 @@ class GDANumInt(NumInt):
             warn("CUDA is not available. Using CPU.")
             self.device = torch.device("cpu")
 
-        self.gda = gda.eval().to(device=self.device, dtype=dtype)
+        self.gda = deepcopy(gda).eval().to(device=self.device, dtype=dtype)
 
         self.kinetic = kinetic
         self.eps = eps
