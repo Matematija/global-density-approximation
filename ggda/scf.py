@@ -6,14 +6,12 @@ import numpy as np
 
 import torch
 from torch import autograd
-from torch.autograd.functional import hvp
 
 from pyscf import dft
 from pyscf.dft import libxc
 from pyscf.dft.numint import NumInt
 
 from .gda import GlobalDensityApprox
-from .features import log_t_weiszacker
 from .libxc import eval_xc
 
 
@@ -34,7 +32,7 @@ class RKS(dft.rks.RKS):
 
     @gda.setter
     def gda(self, value):
-        self._numint = GDANumInt(value, kinetic=False)
+        self._numint = GDANumInt(value)
 
 
 class UKS(dft.uks.UKS):
@@ -54,20 +52,14 @@ class UKS(dft.uks.UKS):
 
     @gda.setter
     def gda(self, value):
-        self._numint = GDANumInt(value, kinetic=False)
+        self._numint = GDANumInt(value)
 
 
 ####################################################################################################
 
 
 class GDANumInt(NumInt):
-    def __init__(
-        self,
-        gda: GlobalDensityApprox,
-        kinetic: bool = False,
-        eps: float = 0.0,
-        dtype: Any = torch.float64,
-    ):
+    def __init__(self, gda: GlobalDensityApprox, eps: float = 0.0, dtype: Any = torch.float64):
 
         super().__init__()
 
@@ -79,7 +71,6 @@ class GDANumInt(NumInt):
 
         self.gda = deepcopy(gda).eval().to(device=self.device, dtype=dtype)
 
-        self.kinetic = kinetic
         self.eps = eps
         self.dtype = dtype
 
@@ -123,50 +114,36 @@ class GDANumInt(NumInt):
         if xc_type is None:
             xc_type = libxc.xc_type(xc_code)
 
-        if self.kinetic or xc_type == "MGGA":
-
-            if not spin:
-                log_tau_p = self.gda.log_tau(
-                    rho, grad_rho, coords, weights, pauli=True, eps=self.eps
-                )
-            else:
-                raise NotImplementedError("UKS not working yet.")
-
         if xc_type == "MGGA":
 
             if not spin:
-                gamma = torch.sum(grad_rho**2, dim=-1)
-                log_tw = log_t_weiszacker(rho, gamma, eps=self.eps)
-                tau = torch.logaddexp(log_tw, log_tau_p).exp()
+                tau = self.gda.log_tau(rho, grad_rho, coords, weights, eps=self.eps).exp()
+
             else:
-                raise NotImplementedError("Meta-GGA is not implemented for UKS.")
+                rho_a, rho_b = rho.unbind(dim=-1)
+                grad_rho_a, grad_rho_b = grad_rho.unbind(dim=-1)
+
+                # fmt: off
+                tau_a = self.gda.log_tau(2*rho_a, 2*grad_rho_a, coords, weights, eps=self.eps).exp()
+                tau_b = self.gda.log_tau(2*rho_b, 2*grad_rho_b, coords, weights, eps=self.eps).exp()
+                # fmt: on
+
+                tau = 0.5 * torch.stack([tau_a, tau_b], dim=-1)
 
         else:
             tau = None
 
-        E = weights @ eval_xc(xc_code, rho, grad_rho, tau, spin=spin)
+        return weights @ eval_xc(xc_code, rho, grad_rho, tau, spin=spin)
 
-        if self.kinetic:
-
-            if not spin:
-                Tp = torch.logsumexp(torch.log(weights) + log_tau_p, dim=-1).exp()
-            else:
-                raise NotImplementedError("UKS not working yet.")
-
-            E = E + Tp
-
-        return E
-
-    def nr_vxc_aux(self, mol, grids, xc_code, dms, spin, hermi):
+    def nr_vxc_aux(self, mol, grids, xc_code, dm, spin, hermi, *, create_graph=False):
 
         xc_type = libxc.xc_type(xc_code)
 
         ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
-        dm = torch.tensor(dms, requires_grad=True, device=self.device, dtype=self.dtype)
-
+        dm = torch.as_tensor(dm, device=self.device, dtype=self.dtype).requires_grad_(True)
         rho, grad_rho = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
         E = self.xc_energy(xc_code, rho, grad_rho, coords, weights, spin=spin, xc_type=xc_type)
-        (X,) = autograd.grad(E, dm)
+        (X,) = autograd.grad(E, dm, create_graph=create_graph)
 
         if hermi:
             X = (X + X.mT) / 2
@@ -230,21 +207,19 @@ class GDANumInt(NumInt):
         if dm0 is None:
             dm0 = self.dm0
 
-        del rho0, vxc, fxc, relativity, hermi, max_memory, verbose
+        del rho0, vxc, fxc, relativity, max_memory, verbose
 
-        xc_type = libxc.xc_type(xc_code)
+        dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
+        _, _, X = self.nr_vxc_aux(mol, grids, xc_code, dm0, spin=0, hermi=hermi, create_graph=True)
 
-        ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
+        hvps = []
 
-        dm0 = torch.tensor(dm0, device=self.device, dtype=self.dtype)
-        dms = torch.tensor(dms, device=self.device, dtype=self.dtype)
+        for dm in dms:
+            dm = torch.tensor(dm, device=self.device, dtype=self.dtype)
+            (hvp,) = autograd.grad(X, dm0, grad_outputs=dm, retain_graph=True)
+            hvps.append(hvp.detach().cpu().numpy().astype(np.float64))
 
-        def eval_energy(dm):
-            rho, gamma = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
-            return self.xc_energy(xc_code, rho, gamma, coords, weights, spin=0, xc_type=xc_type)
-
-        hvps = [hvp(eval_energy, dm0, dm)[1] for dm in dms]
-        return np.stack([h.cpu().numpy() for h in hvps], axis=0)
+        return np.stack(hvps, axis=0)
 
     def nr_uks_fxc(
         self,
