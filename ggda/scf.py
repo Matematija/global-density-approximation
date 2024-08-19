@@ -157,7 +157,7 @@ class GDANumInt(NumInt):
 
         return E
 
-    def nr_vxc_aux(self, mol, grids, xc_code, dms, spin):
+    def nr_vxc_aux(self, mol, grids, xc_code, dms, spin, hermi):
 
         xc_type = libxc.xc_type(xc_code)
 
@@ -166,9 +166,10 @@ class GDANumInt(NumInt):
 
         rho, grad_rho = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
         E = self.xc_energy(xc_code, rho, grad_rho, coords, weights, spin=spin, xc_type=xc_type)
-
         (X,) = autograd.grad(E, dm)
-        X = (X + X.mT) / 2
+
+        if hermi:
+            X = (X + X.mT) / 2
 
         with torch.no_grad():
             N = weights @ rho
@@ -179,9 +180,9 @@ class GDANumInt(NumInt):
         self, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None
     ):
 
-        del relativity, hermi, max_memory, verbose
+        del relativity, max_memory, verbose
 
-        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=0)
+        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=0, hermi=hermi)
 
         nelec = N.detach().item()
         excsum = E.detach().item()
@@ -192,9 +193,9 @@ class GDANumInt(NumInt):
     def nr_uks(
         self, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None
     ):
-        del relativity, hermi, max_memory, verbose
+        del relativity, max_memory, verbose
 
-        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=1)
+        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=1, hermi=hermi)
 
         nelec = N.detach().cpu().numpy().astype(np.float64)
         excsum = E.detach().item()
