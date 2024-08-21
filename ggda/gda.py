@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch import Tensor
 
-from .layers import GatedMLP, FourierAttention, FourierPositionalEncoding
+from .layers import GatedMLP, GalerkinAttention, FourierPositionalEncoding
 from .layers import coordinate_norm, grid_norm
 from .features import log_t_thomas_fermi, log_t_weiszacker
 from .utils import Activation, activation_func
@@ -16,7 +16,7 @@ class DensityEmbedding(nn.Module):
         embed_dim: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
         eps: float = 1e-4,
     ):
 
@@ -47,12 +47,12 @@ class Block(nn.Module):
         embed_dim: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()
 
-        self.attention = FourierAttention(embed_dim, kernel_scale)
+        self.attention = GalerkinAttention(embed_dim, kernel_scale)
         self.mlp = GatedMLP(embed_dim, enhancement, activation)
         self.norm = nn.LayerNorm(embed_dim)
 
@@ -67,7 +67,7 @@ class FieldProjection(nn.Module):
         embed_dim: int,
         out_features: int = 1,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()
@@ -90,7 +90,7 @@ class GlobalDensityApprox(nn.Module):
         n_blocks: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()
@@ -101,6 +101,17 @@ class GlobalDensityApprox(nn.Module):
         self.blocks = nn.ModuleList([make_block() for _ in range(n_blocks)])
 
         self.proj = FieldProjection(embed_dim, 1, enhancement, activation)
+
+    def forward(self, rho: Tensor, grad_rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
+
+        wrho = weights * rho
+        coords = coordinate_norm(coords, wrho)
+        phi = self.embedding(rho, grad_rho, coords, wrho)
+
+        for block in self.blocks:
+            phi = block(phi, coords, weights)
+
+        return self.proj(phi).squeeze(dim=-1)
 
     def log_tau(
         self,
@@ -126,14 +137,3 @@ class GlobalDensityApprox(nn.Module):
             return log_tau_pauli
         else:
             return torch.logaddexp(log_tau_vw, log_tau_pauli)
-
-    def forward(self, rho: Tensor, grad_rho: Tensor, coords: Tensor, weights: Tensor) -> Tensor:
-
-        wrho = weights * rho
-        coords = coordinate_norm(coords, wrho)
-        phi = self.embedding(rho, grad_rho, coords, wrho)
-
-        for block in self.blocks:
-            phi = block(phi, coords, wrho)
-
-        return self.proj(phi).squeeze(dim=-1)
