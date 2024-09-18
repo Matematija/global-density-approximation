@@ -212,14 +212,25 @@ class GDANumInt(NumInt):
         dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
         _, _, X = self.nr_vxc_aux(mol, grids, xc_code, dm0, spin=0, hermi=hermi, create_graph=True)
 
+        if isinstance(dms, np.ndarray) and dms.ndim == 2:
+            dms = [dms]
+
         hvps = []
 
         for dm in dms:
+
             dm = torch.tensor(dm, device=self.device, dtype=self.dtype)
             (hvp,) = autograd.grad(X, dm0, grad_outputs=dm, retain_graph=True)
+
+            if hermi:
+                hvp = (hvp + hvp.mT) / 2
+
             hvps.append(hvp.detach().cpu().numpy().astype(np.float64))
 
-        return np.stack(hvps, axis=0)
+        if len(hvps) == 1:
+            return hvps[0]
+        else:
+            return np.stack(hvps, axis=0)
 
     def nr_uks_fxc(
         self,
