@@ -6,13 +6,15 @@ import numpy as np
 
 import torch
 from torch import autograd
+from torch import Tensor
 
-from pyscf import dft
+from pyscf import dft, lib
 from pyscf.dft import libxc
 from pyscf.dft.numint import NumInt
 
 from .gda import GlobalDensityApprox
 from .libxc import eval_xc
+from .utils import to_numpy
 
 
 class RKS(dft.rks.RKS):
@@ -70,28 +72,29 @@ class GDANumInt(NumInt):
             self.device = torch.device("cpu")
 
         self.gda = deepcopy(gda).eval().to(device=self.device, dtype=dtype)
+        self.gda.zero_grad()
 
         self.eps = eps
         self.dtype = dtype
 
-        self.gda.zero_grad()
+    def _to_tensor(self, arr: np.ndarray, requires_grad: bool = False) -> Tensor:
+        return torch.tensor(arr, requires_grad=requires_grad, device=self.device, dtype=self.dtype)
 
     def process_mol(self, mol, grids, xc_type):
 
         if grids.coords is None:
             grids.build(with_non0tab=True)
 
-        if xc_type not in ["LDA", "GGA", "MGGA"]:
-            raise NotImplementedError("Only LDA, GGA, and MGGA XC functionals are supported.")
-
         if xc_type == "LDA":
             ao_vals = self.eval_ao(mol, grids.coords, deriv=0, cutoff=grids.cutoff)
-            ao = torch.tensor(ao_vals, device=self.device, dtype=self.dtype)
-            grad_ao = None
-        else:
+            ao, grad_ao = self._to_tensor(ao_vals), None
+
+        elif xc_type in ["GGA", "MGGA"]:
             ao_vals = self.eval_ao(mol, grids.coords, deriv=1, cutoff=grids.cutoff)
-            ao = torch.tensor(ao_vals[0], device=self.device, dtype=self.dtype)
-            grad_ao = torch.tensor(ao_vals[1:4], device=self.device, dtype=self.dtype)
+            ao, grad_ao = self._to_tensor(ao_vals[0]), self._to_tensor(ao_vals[1:4])
+
+        else:
+            raise NotImplementedError("Only LDA, GGA, and MGGA XC functionals are supported.")
 
         coords = torch.tensor(grids.coords, device=self.device, dtype=self.dtype)
         weights = torch.tensor(grids.weights, device=self.device, dtype=self.dtype)
@@ -160,12 +163,7 @@ class GDANumInt(NumInt):
         del relativity, max_memory, verbose
 
         E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=0, hermi=hermi)
-
-        nelec = N.detach().item()
-        excsum = E.detach().item()
-        vmat = X.detach().cpu().numpy().astype(np.float64)
-
-        return nelec, excsum, vmat
+        return N.detach().item(), E.detach().item(), to_numpy(X)
 
     def nr_uks(
         self, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None
@@ -173,21 +171,50 @@ class GDANumInt(NumInt):
         del relativity, max_memory, verbose
 
         E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=1, hermi=hermi)
-
-        nelec = N.detach().cpu().numpy().astype(np.float64)
-        excsum = E.detach().item()
-        vmat = X.detach().cpu().numpy().astype(np.float64)
-
-        return nelec, excsum, vmat
+        return to_numpy(N), E.detach().item(), to_numpy(X)
 
     def cache_xc_kernel(self, mol, grids, xc_code, mo_coeff, mo_occ, spin=0, max_memory=2000):
+        self._cached_dm = np.einsum("a,ma,na->mn", mo_occ, mo_coeff, mo_coeff)
+        return super().cache_xc_kernel(mol, grids, xc_code, mo_coeff, mo_occ, spin, max_memory)
 
-        dm0 = np.einsum("a,ma,na->mn", mo_occ, mo_coeff, mo_coeff)
-        self.dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
+    def cache_xc_kernel1(self, mol, grids, xc_code, dm, spin=0, max_memory=2000):
+        self._cached_dm = dm
+        return super().cache_xc_kernel1(mol, grids, xc_code, dm, spin, max_memory)
 
-        return super().cache_xc_kernel(
-            mol, grids, xc_code, mo_coeff, mo_occ, spin=spin, max_memory=max_memory
+    def nr_rks_fxc_st(
+        self,
+        mol,
+        grids,
+        xc_code,
+        dm0,
+        dms_alpha,
+        relativity=0,
+        singlet=True,
+        rho0=None,
+        vxc=None,
+        fxc=None,
+        max_memory=2000,
+        verbose=None,
+    ):
+
+        assert singlet, "Only singlet hessians are supported."
+
+        kdm = self.nr_rks_fxc(
+            mol,
+            grids,
+            xc_code,
+            dm0,
+            dms_alpha,
+            relativity,
+            0,
+            rho0,
+            vxc,
+            fxc,
+            max_memory,
+            verbose,
         )
+
+        return 2 * kdm
 
     def nr_rks_fxc(
         self,
@@ -207,11 +234,7 @@ class GDANumInt(NumInt):
 
         del rho0, vxc, fxc, relativity, max_memory, verbose
 
-        if dm0 is None:
-            dm0 = self.dm0
-        else:
-            dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
-
+        dm0 = self._to_tensor(dm0 if dm0 is not None else self._cached_dm, requires_grad=True)
         _, _, X = self.nr_vxc_aux(mol, grids, xc_code, dm0, spin=0, hermi=hermi, create_graph=True)
 
         if isinstance(dms, np.ndarray) and dms.ndim == 2:
@@ -224,13 +247,12 @@ class GDANumInt(NumInt):
 
         for dm in dms:
 
-            dm = torch.tensor(dm, device=self.device, dtype=self.dtype)
-            (hvp,) = autograd.grad(X, dm0, grad_outputs=dm, retain_graph=True)
+            (hvp,) = autograd.grad(X, dm0, grad_outputs=self._to_tensor(dm), retain_graph=True)
 
             if hermi:
                 hvp = (hvp + hvp.mT) / 2
 
-            hvps.append(hvp.detach().cpu().numpy().astype(np.float64))
+            hvps.append(to_numpy(hvp))
 
         return hvps[0] if squeeze else np.stack(hvps, axis=0)
 
