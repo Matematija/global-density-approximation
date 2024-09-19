@@ -1,5 +1,7 @@
-from typing import Union, Callable, Optional, Sequence
+from typing import Union, Callable, Optional, Sequence, Any
 from math import log
+
+import numpy as np
 
 import torch
 from torch import nn
@@ -8,6 +10,10 @@ from torch import Tensor, BoolTensor
 from torch import device as Device, dtype as Dtype
 
 Activation = Union[str, Callable[[Tensor], Tensor]]
+
+
+def to_numpy(x: Tensor, dtype: Any = np.float64):
+    return x.detach().cpu().numpy().astype(dtype)
 
 
 def param_count(model: nn.Module) -> int:
