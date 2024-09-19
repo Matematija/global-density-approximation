@@ -1,7 +1,5 @@
 from typing import Optional
 
-import numpy as np
-
 import torch
 from torch.autograd import Function
 from torch import Tensor
@@ -10,11 +8,9 @@ from einops import rearrange
 
 from pyscf.dft import libxc
 
+from .utils import to_numpy
+
 __all__ = ["eval_xc"]
-
-
-def to_numpy(x, dtype=np.float64):
-    return x.detach().cpu().numpy().astype(dtype)
 
 
 def extract_rho(rho_data, xc_type):
