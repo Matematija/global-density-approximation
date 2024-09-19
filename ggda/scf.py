@@ -106,7 +106,7 @@ class GDANumInt(NumInt):
         rho = torch.einsum("...mn,xm,xn->x...", dm, ao, ao)
 
         if xc_type in ["GGA", "MGGA"]:
-            grad_rho = 2 * torch.einsum("...mn,xm,cxn->x...c", dm, ao, grad_ao)
+            grad_rho = 2 * torch.einsum("...mn,xm,cxn->xc...", dm, ao, grad_ao)
         else:
             grad_rho = None
 
@@ -143,8 +143,8 @@ class GDANumInt(NumInt):
         xc_type = libxc.xc_type(xc_code)
 
         ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
-        dm = torch.as_tensor(dm, device=self.device, dtype=self.dtype).requires_grad_(True)
         rho, grad_rho = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
+
         E = self.xc_energy(xc_code, rho, grad_rho, coords, weights, spin=spin, xc_type=xc_type)
         (X,) = autograd.grad(E, dm, create_graph=create_graph)
 
@@ -154,7 +154,7 @@ class GDANumInt(NumInt):
         with torch.no_grad():
             N = weights @ rho
 
-        return E, N, X
+        return N, E, X
 
     def nr_rks(
         self, mol, grids, xc_code, dms, relativity=0, hermi=1, max_memory=2000, verbose=None
@@ -162,7 +162,9 @@ class GDANumInt(NumInt):
 
         del relativity, max_memory, verbose
 
-        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=0, hermi=hermi)
+        dm = self._to_tensor(dms, requires_grad=True)
+        N, E, X = self.nr_vxc_aux(mol, grids, xc_code, dm, spin=0, hermi=hermi)
+
         return N.detach().item(), E.detach().item(), to_numpy(X)
 
     def nr_uks(
@@ -170,7 +172,9 @@ class GDANumInt(NumInt):
     ):
         del relativity, max_memory, verbose
 
-        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=1, hermi=hermi)
+        dm = self._to_tensor(dms, requires_grad=True)
+        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dm, spin=1, hermi=hermi)
+
         return to_numpy(N), E.detach().item(), to_numpy(X)
 
     def cache_xc_kernel(self, mol, grids, xc_code, mo_coeff, mo_occ, spin=0, max_memory=2000):
@@ -180,6 +184,25 @@ class GDANumInt(NumInt):
     def cache_xc_kernel1(self, mol, grids, xc_code, dm, spin=0, max_memory=2000):
         self._cached_dm = dm
         return super().cache_xc_kernel1(mol, grids, xc_code, dm, spin, max_memory)
+
+    def nr_rks_fxc_aux(self, mol, grids, xc_code, dm0, dms, hermi, spin):
+
+        _, _, X = self.nr_vxc_aux(
+            mol, grids, xc_code, dm0, spin=spin, hermi=hermi, create_graph=True
+        )
+
+        Xa = X[0] if spin else X
+
+        def hvp_fn(dm):
+            (hvp,) = autograd.grad(Xa, dm0, grad_outputs=dm, retain_graph=True)
+            return hvp
+
+        hvps = hvp_fn(dms) if dms.ndim == 2 else torch.vmap(hvp_fn)(dms)
+
+        if hermi:
+            hvps = (hvps + hvps.mT) / 2
+
+        return hvps
 
     def nr_rks_fxc_st(
         self,
@@ -199,22 +222,16 @@ class GDANumInt(NumInt):
 
         assert singlet, "Only singlet hessians are supported."
 
-        kdm = self.nr_rks_fxc(
-            mol,
-            grids,
-            xc_code,
-            dm0,
-            dms_alpha,
-            relativity,
-            0,
-            rho0,
-            vxc,
-            fxc,
-            max_memory,
-            verbose,
-        )
+        del rho0, vxc, fxc, relativity, max_memory, verbose
 
-        return 2 * kdm
+        dm0 = dm0 if dm0 is not None else self._cached_dm
+        dm_ab = np.repeat(0.5 * dm0[None], axis=0, repeats=2)
+        dm_ab = self._to_tensor(dm_ab, requires_grad=True)
+        dms_alpha = self._to_tensor(dms_alpha)
+
+        kdm = self.nr_rks_fxc_aux(mol, grids, xc_code, dm_ab, dms_alpha, hermi=1, spin=1)
+
+        return to_numpy(kdm).sum(axis=1)
 
     def nr_rks_fxc(
         self,
@@ -235,26 +252,11 @@ class GDANumInt(NumInt):
         del rho0, vxc, fxc, relativity, max_memory, verbose
 
         dm0 = self._to_tensor(dm0 if dm0 is not None else self._cached_dm, requires_grad=True)
-        _, _, X = self.nr_vxc_aux(mol, grids, xc_code, dm0, spin=0, hermi=hermi, create_graph=True)
+        dms = self._to_tensor(dms)
 
-        if isinstance(dms, np.ndarray) and dms.ndim == 2:
-            dms = [dms]
-            squeeze = True
-        else:
-            squeeze = False
+        hvps = self.nr_rks_fxc_aux(mol, grids, xc_code, dm0, dms, hermi=hermi, spin=0)
 
-        hvps = []
-
-        for dm in dms:
-
-            (hvp,) = autograd.grad(X, dm0, grad_outputs=self._to_tensor(dm), retain_graph=True)
-
-            if hermi:
-                hvp = (hvp + hvp.mT) / 2
-
-            hvps.append(to_numpy(hvp))
-
-        return hvps[0] if squeeze else np.stack(hvps, axis=0)
+        return to_numpy(hvps)
 
     def nr_uks_fxc(
         self,
