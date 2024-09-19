@@ -56,7 +56,7 @@ class LibXCEnergy(Function):
         return torch.tensor(rho * exc, dtype=dtype, device=device)
 
     @staticmethod
-    def vjp(ctx, d_exc):
+    def backward(ctx, d_exc):
         (rho_data,) = ctx.saved_tensors
         vxc = LibXCPotential.apply(ctx.xc, rho_data)
         return None, d_exc * vxc
@@ -75,7 +75,7 @@ class LibXCPotential(Function):
         return torch.tensor(vxc, dtype=dtype, device=device)
 
     @staticmethod
-    def vjp(ctx, d_vxc):
+    def backward(ctx, d_vxc):
 
         dtype, device = d_vxc.dtype, d_vxc.device
         (rho_data,) = ctx.saved_tensors
@@ -127,7 +127,7 @@ def stack_rho_data_uks(
     rho_data = rearrange(rho, "... s -> s (...)")
 
     if deriv_order >= 1:
-        assert grad_rho is not None, "Gamma must be provided for GGAs and MGGA."
+        assert grad_rho is not None, "Density gradients must be provided for GGAs and MGGA."
         grad_rho = rearrange(grad_rho, "... i s -> s i (...)")
         rho_data = torch.cat([rho_data.unsqueeze(1), grad_rho], dim=1)
 

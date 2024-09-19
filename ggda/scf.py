@@ -84,7 +84,7 @@ class GDANumInt(NumInt):
         if xc_type not in ["LDA", "GGA", "MGGA"]:
             raise NotImplementedError("Only LDA, GGA, and MGGA XC functionals are supported.")
 
-        if xc_type == "LDA" and not self.kinetic:
+        if xc_type == "LDA":
             ao_vals = self.eval_ao(mol, grids.coords, deriv=0, cutoff=grids.cutoff)
             ao = torch.tensor(ao_vals, device=self.device, dtype=self.dtype)
             grad_ao = None
@@ -102,7 +102,7 @@ class GDANumInt(NumInt):
 
         rho = torch.einsum("...mn,xm,xn->x...", dm, ao, ao)
 
-        if xc_type in ["GGA", "MGGA"] or self.kinetic:
+        if xc_type in ["GGA", "MGGA"]:
             grad_rho = 2 * torch.einsum("...mn,xm,cxn->x...c", dm, ao, grad_ao)
         else:
             grad_rho = None
@@ -182,7 +182,8 @@ class GDANumInt(NumInt):
 
     def cache_xc_kernel(self, mol, grids, xc_code, mo_coeff, mo_occ, spin=0, max_memory=2000):
 
-        self.dm0 = np.einsum("a,ma,na->mn", mo_occ, mo_coeff, mo_coeff)
+        dm0 = np.einsum("a,ma,na->mn", mo_occ, mo_coeff, mo_coeff)
+        self.dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
 
         return super().cache_xc_kernel(
             mol, grids, xc_code, mo_coeff, mo_occ, spin=spin, max_memory=max_memory
@@ -204,16 +205,20 @@ class GDANumInt(NumInt):
         verbose=None,
     ):
 
-        if dm0 is None:
-            dm0 = self.dm0
-
         del rho0, vxc, fxc, relativity, max_memory, verbose
 
-        dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
+        if dm0 is None:
+            dm0 = self.dm0
+        else:
+            dm0 = torch.tensor(dm0, requires_grad=True, device=self.device, dtype=self.dtype)
+
         _, _, X = self.nr_vxc_aux(mol, grids, xc_code, dm0, spin=0, hermi=hermi, create_graph=True)
 
         if isinstance(dms, np.ndarray) and dms.ndim == 2:
             dms = [dms]
+            squeeze = True
+        else:
+            squeeze = False
 
         hvps = []
 
@@ -227,10 +232,7 @@ class GDANumInt(NumInt):
 
             hvps.append(hvp.detach().cpu().numpy().astype(np.float64))
 
-        if len(hvps) == 1:
-            return hvps[0]
-        else:
-            return np.stack(hvps, axis=0)
+        return hvps[0] if squeeze else np.stack(hvps, axis=0)
 
     def nr_uks_fxc(
         self,
