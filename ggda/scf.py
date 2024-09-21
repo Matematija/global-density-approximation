@@ -166,10 +166,10 @@ class GDANumInt(NumInt):
 
             return N, E, X
 
-        if dms.ndim == 2:
+        if (spin == 0 and dms.ndim == 2) or (spin == 1 and dms.ndim == 3):
             N, E, X = vxc_fn(dms)
         else:
-            N, E, X = torch.vmap(vxc_fn, chunk_size=self.chunk_size)(dms)
+            N, E, X = torch.vmap(vxc_fn, out_dims=(0, 0, 0), chunk_size=self.chunk_size)(dms)
 
         if hermi:
             X = (X + X.mT) / 2
