@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 from warnings import warn
 from copy import deepcopy
 
@@ -8,7 +8,7 @@ import torch
 from torch import autograd
 from torch import Tensor
 
-from pyscf import dft, lib
+from pyscf import dft
 from pyscf.dft import libxc
 from pyscf.dft.numint import NumInt
 
@@ -17,13 +17,15 @@ from .libxc import eval_xc
 from .utils import to_numpy
 
 
-class RKS(dft.rks.RKS):
-    def __init__(self, *args, gda=None, **kwargs):
+class KohnShamGDA:
+    def __init__(self, *args, **kwargs):
 
-        super().__init__(*args, **kwargs)
+        gda = kwargs.pop("gda", None)
 
         if gda is not None:
             self.gda = gda
+
+        super().__init__(*args, **kwargs)
 
     @property
     def gda(self):
@@ -36,32 +38,40 @@ class RKS(dft.rks.RKS):
     def gda(self, value):
         self._numint = GDANumInt(value)
 
-
-class UKS(dft.uks.UKS):
-    def __init__(self, *args, gda=None, **kwargs):
-
-        super().__init__(*args, **kwargs)
-
-        if gda is not None:
-            self.gda = gda
-
     @property
-    def gda(self):
+    def gda_chunk_size(self):
         if isinstance(self._numint, GDANumInt):
-            return self._numint.gda
+            return self._numint.chunk_size
         else:
             return None
 
-    @gda.setter
-    def gda(self, value):
-        self._numint = GDANumInt(value)
+    @gda_chunk_size.setter
+    def gda_chunk_size(self, value):
+        if isinstance(self._numint, GDANumInt):
+            self._numint.chunk_size = value
+        else:
+            raise AttributeError("GDA is not set.")
+
+
+class RKS(KohnShamGDA, dft.rks.RKS):
+    pass
+
+
+class UKS(KohnShamGDA, dft.uks.UKS):
+    pass
 
 
 ####################################################################################################
 
 
 class GDANumInt(NumInt):
-    def __init__(self, gda: GlobalDensityApprox, eps: float = 0.0, dtype: Any = torch.float64):
+    def __init__(
+        self,
+        gda: GlobalDensityApprox,
+        eps: float = 0.0,
+        chunk_size: Optional[int] = None,
+        dtype: Any = torch.float64,
+    ):
 
         super().__init__()
 
@@ -75,6 +85,7 @@ class GDANumInt(NumInt):
         self.gda.zero_grad()
 
         self.eps = eps
+        self.chunk_size = chunk_size
         self.dtype = dtype
 
     def _to_tensor(self, arr: np.ndarray, requires_grad: bool = False) -> Tensor:
@@ -138,21 +149,30 @@ class GDANumInt(NumInt):
 
         return weights @ eval_xc(xc_code, rho, grad_rho, tau, spin=spin)
 
-    def nr_vxc_aux(self, mol, grids, xc_code, dm, spin, hermi, *, create_graph=False):
+    def nr_vxc_aux(self, mol, grids, xc_code, dms, spin, hermi, *, create_graph=False):
 
         xc_type = libxc.xc_type(xc_code)
 
         ao, grad_ao, coords, weights = self.process_mol(mol, grids, xc_type=xc_type)
-        rho, grad_rho = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
 
-        E = self.xc_energy(xc_code, rho, grad_rho, coords, weights, spin=spin, xc_type=xc_type)
-        (X,) = autograd.grad(E, dm, create_graph=create_graph)
+        def vxc_fn(dm):
+
+            rho, grad_rho = self.density_inputs(dm, ao, grad_ao, xc_type=xc_type)
+            E = self.xc_energy(xc_code, rho, grad_rho, coords, weights, spin=spin, xc_type=xc_type)
+            (X,) = autograd.grad(E, dm, create_graph=create_graph)
+
+            with torch.no_grad():
+                N = weights @ rho
+
+            return N, E, X
+
+        if dms.ndim == 2:
+            N, E, X = vxc_fn(dms)
+        else:
+            N, E, X = torch.vmap(vxc_fn, chunk_size=self.chunk_size)(dms)
 
         if hermi:
             X = (X + X.mT) / 2
-
-        with torch.no_grad():
-            N = weights @ rho
 
         return N, E, X
 
@@ -162,8 +182,8 @@ class GDANumInt(NumInt):
 
         del relativity, max_memory, verbose
 
-        dm = self._to_tensor(dms, requires_grad=True)
-        N, E, X = self.nr_vxc_aux(mol, grids, xc_code, dm, spin=0, hermi=hermi)
+        dms = self._to_tensor(dms, requires_grad=True)
+        N, E, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=0, hermi=hermi)
 
         return N.detach().item(), E.detach().item(), to_numpy(X)
 
@@ -172,8 +192,8 @@ class GDANumInt(NumInt):
     ):
         del relativity, max_memory, verbose
 
-        dm = self._to_tensor(dms, requires_grad=True)
-        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dm, spin=1, hermi=hermi)
+        dms = self._to_tensor(dms, requires_grad=True)
+        E, N, X = self.nr_vxc_aux(mol, grids, xc_code, dms, spin=1, hermi=hermi)
 
         return to_numpy(N), E.detach().item(), to_numpy(X)
 
@@ -197,7 +217,10 @@ class GDANumInt(NumInt):
             (hvp,) = autograd.grad(Xa, dm0, grad_outputs=dm, retain_graph=True)
             return hvp
 
-        hvps = hvp_fn(dms) if dms.ndim == 2 else torch.vmap(hvp_fn)(dms)
+        if dms.ndim == 2:
+            hvps = hvp_fn(dms)
+        else:
+            hvps = torch.vmap(hvp_fn, chunk_size=self.chunk_size)(dms)
 
         if hermi:
             hvps = (hvps + hvps.mT) / 2
