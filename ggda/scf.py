@@ -1,6 +1,7 @@
 from typing import Any, Optional
 from warnings import warn
 from copy import deepcopy
+from functools import lru_cache
 
 import numpy as np
 
@@ -28,26 +29,37 @@ class KohnShamGDA:
         super().__init__(*args, **kwargs)
 
     @property
+    def is_gda(self):
+        return isinstance(self._numint, GDANumInt)
+
+    @property
     def gda(self):
-        if isinstance(self._numint, GDANumInt):
+
+        if self.is_gda:
             return self._numint.gda
         else:
             return None
 
     @gda.setter
     def gda(self, value):
-        self._numint = GDANumInt(value)
+
+        if isinstance(value, GlobalDensityApprox):
+            self._numint = GDANumInt(value)
+        else:
+            raise ValueError(f"Invalid GDA model, got type {type(value)}")
 
     @property
     def gda_chunk_size(self):
-        if isinstance(self._numint, GDANumInt):
+
+        if self.is_gda:
             return self._numint.chunk_size
         else:
-            return None
+            raise AttributeError("GDA is not set.")
 
     @gda_chunk_size.setter
     def gda_chunk_size(self, value):
-        if isinstance(self._numint, GDANumInt):
+
+        if self.is_gda:
             self._numint.chunk_size = value
         else:
             raise AttributeError("GDA is not set.")
@@ -91,6 +103,7 @@ class GDANumInt(NumInt):
     def _to_tensor(self, arr: np.ndarray, requires_grad: bool = False) -> Tensor:
         return torch.tensor(arr, requires_grad=requires_grad, device=self.device, dtype=self.dtype)
 
+    @lru_cache(maxsize=4)
     def process_mol(self, mol, grids, xc_type):
 
         if grids.coords is None:
@@ -107,8 +120,7 @@ class GDANumInt(NumInt):
         else:
             raise NotImplementedError("Only LDA, GGA, and MGGA XC functionals are supported.")
 
-        coords = torch.tensor(grids.coords, device=self.device, dtype=self.dtype)
-        weights = torch.tensor(grids.weights, device=self.device, dtype=self.dtype)
+        coords, weights = self._to_tensor(grids.coords), self._to_tensor(grids.weights)
 
         return ao, grad_ao, coords, weights
 
