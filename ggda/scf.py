@@ -64,6 +64,22 @@ class KohnShamGDA:
         else:
             raise AttributeError("GDA is not set.")
 
+    @property
+    def gda_device(self):
+
+        if self.is_gda:
+            return self._numint.device
+        else:
+            raise AttributeError("GDA is not set.")
+
+    @gda_device.setter
+    def gda_device(self, value):
+
+        if self.is_gda:
+            self._numint.device = torch.device(value)
+        else:
+            raise AttributeError("GDA is not set.")
+
 
 class RKS(KohnShamGDA, dft.rks.RKS):
     pass
@@ -82,16 +98,19 @@ class GDANumInt(NumInt):
         gda: GlobalDensityApprox,
         eps: float = 0.0,
         chunk_size: Optional[int] = None,
+        device: Any = None,
         dtype: Any = torch.float64,
     ):
 
         super().__init__()
 
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
+        if device is not None:
+            self._device = torch.device(device)
+        elif torch.cuda.is_available():
+            self._device = torch.device("cuda")
         else:
             warn("CUDA is not available. Using CPU.")
-            self.device = torch.device("cpu")
+            self._device = torch.device("cpu")
 
         self.gda = deepcopy(gda).eval().to(device=self.device, dtype=dtype)
         self.gda.zero_grad()
@@ -99,6 +118,15 @@ class GDANumInt(NumInt):
         self.eps = eps
         self.chunk_size = chunk_size
         self.dtype = dtype
+
+    @property
+    def device(self):
+        return self._device
+
+    @device.setter
+    def device(self, value):
+        self._device = torch.device(value)
+        self.gda.to(device=self._device)
 
     def _to_tensor(self, arr: np.ndarray, requires_grad: bool = False) -> Tensor:
         return torch.tensor(arr, requires_grad=requires_grad, device=self.device, dtype=self.dtype)
