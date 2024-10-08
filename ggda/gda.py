@@ -16,7 +16,7 @@ class DensityEmbedding(nn.Module):
         embed_dim: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
         eps: float = 1e-4,
     ):
 
@@ -47,7 +47,7 @@ class Block(nn.Module):
         embed_dim: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()
@@ -67,7 +67,7 @@ class FieldProjection(nn.Module):
         embed_dim: int,
         out_features: int = 1,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()
@@ -90,7 +90,7 @@ class GlobalDensityApprox(nn.Module):
         n_blocks: int,
         kernel_scale: float,
         enhancement: float = 2.0,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
     ):
 
         super().__init__()

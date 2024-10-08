@@ -14,7 +14,7 @@ class MLP(nn.Module):
         self,
         features: int,
         enhancement: float,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
         out_features: Optional[int] = None,
         bias: bool = True,
     ):
@@ -39,7 +39,7 @@ class GatedMLP(nn.Module):
         self,
         features: int,
         enhancement: float,
-        activation: Activation = "gelu",
+        activation: Activation = "silu",
         out_features: Optional[int] = None,
         bias: bool = True,
     ):
