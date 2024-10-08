@@ -50,6 +50,7 @@ log_tau = gda.log_tau(n, grad_n, coords, weights)
 ```
 
 defined by
+
 $$
 \tau ( \mathbf{r} ) = \tau _W ( \mathbf{r} ) + e^{ \phi ( \mathbf{r} ) } \left( \tau _U ( \mathbf{r} ) + \eta \tau _W ( \mathbf{r} ) \right)
 $$
