@@ -88,7 +88,7 @@ class GlobalDensityApprox(nn.Module):
         self,
         embed_dim: int,
         n_blocks: int,
-        kernel_scale: float,
+        kernel_scale: float = 1.0,
         enhancement: float = 2.0,
         activation: Activation = "silu",
     ):
