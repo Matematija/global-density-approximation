@@ -50,7 +50,7 @@ log_tau = gda.log_tau(n, grad_n, coords, weights)
 ```
 
 defined by
-$$ \tau ( \mathbf{r} ) = \tau _W ( \mathbf{r} ) + e^{ \phi ( \mathbf{r} ) } ( \tau _U ( \mathbf{r} ) + \eta \, \tau _W ( \mathbf{r} ) ) $$
+$$ \tau ( \mathbf{r} ) = \tau _W ( \mathbf{r} ) + e^{ \phi ( \mathbf{r} ) } ( \tau _U ( \mathbf{r} ) + \eta \tau _W ( \mathbf{r} ) ) $$
 
 where $\tau_U = \frac{3}{10} (3 \pi ^2 )^{2/3} n ^{5/3}$ is the uniform electron gas kinetic energy, $\tau_W = \frac{| \nabla n |^2}{8 n}$ is the von Weizsäcker kinetic functional and $\eta = 10^{-3}$.
 
