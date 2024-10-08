@@ -9,29 +9,29 @@ from .features import mean_and_covariance
 from .utils import Activation, activation_func
 
 
-# class MLP(nn.Module):
-#     def __init__(
-#         self,
-#         features: int,
-#         enhancement: float,
-#         activation: Activation = "gelu",
-#         out_features: Optional[int] = None,
-#         bias: bool = True,
-#     ):
+class MLP(nn.Module):
+    def __init__(
+        self,
+        features: int,
+        enhancement: float,
+        activation: Activation = "gelu",
+        out_features: Optional[int] = None,
+        bias: bool = True,
+    ):
 
-#         super().__init__()
+        super().__init__()
 
-#         self.activation = activation_func(activation)
+        self.activation = activation_func(activation)
 
-#         in_features = features
-#         out_features = out_features or features
-#         width = int(features * enhancement)
+        in_features = features
+        out_features = out_features or features
+        width = int(features * enhancement)
 
-#         self.in_linear = nn.Linear(in_features, width, bias=bias)
-#         self.out_linear = nn.Linear(width, out_features, bias=bias)
+        self.in_linear = nn.Linear(in_features, width, bias=bias)
+        self.out_linear = nn.Linear(width, out_features, bias=bias)
 
-#     def forward(self, x: Tensor) -> Tensor:
-#         return self.out_linear(self.activation(self.in_linear(x)))
+    def forward(self, x: Tensor) -> Tensor:
+        return self.out_linear(self.activation(self.in_linear(x)))
 
 
 class GatedMLP(nn.Module):
