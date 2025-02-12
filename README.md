@@ -82,7 +82,7 @@ This library includes a differentiable PyTorch wrapper around LibXC as a conveni
 An example calculation yielding the PBE potential matrix in the `ccpvdz` basis set $\chi _\mu (\mathbf{r})$:
 
 $$
-V ^{XC} _{\mu \nu} = \int d^3 \mathbf{r} \; \frac{\delta E _{XC}}{\delta n (\mathbf{r})} \chi _\mu (\mathbf{r}) \chi _\nu (\mathbf{r}) = \frac{\partial E_{XC}}{\partial {\Gamma _{\mu \nu}}}
+V ^{XC} _{\mu \nu} = \int d^3 \mathbf{r} \frac{\delta E _{XC}}{\delta n (\mathbf{r})} \chi _\mu (\mathbf{r}) \chi _\nu (\mathbf{r}) = \frac{\partial E_{XC}}{\partial {\Gamma _{\mu \nu}}}
 $$
 
 when the density is represented as $n (\mathbf{r}) = \sum _{\mu \nu} \Gamma _{\mu \nu} \chi _\mu (\mathbf{r}) \chi _\nu (\mathbf{r})$.
