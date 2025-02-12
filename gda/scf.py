@@ -34,7 +34,6 @@ class KohnShamGDA:
 
     @property
     def gda(self):
-
         if self.is_gda:
             return self._numint.gda
         else:
@@ -42,15 +41,13 @@ class KohnShamGDA:
 
     @gda.setter
     def gda(self, value):
-
-        if isinstance(value, GlobalDensityApprox):
+        if isinstance(value, torch.nn.Module):
             self._numint = GDANumInt(value)
         else:
             raise ValueError(f"Invalid GDA model, got type {type(value)}")
 
     @property
     def gda_chunk_size(self):
-
         if self.is_gda:
             return self._numint.chunk_size
         else:
@@ -58,7 +55,6 @@ class KohnShamGDA:
 
     @gda_chunk_size.setter
     def gda_chunk_size(self, value):
-
         if self.is_gda:
             self._numint.chunk_size = value
         else:
@@ -66,7 +62,6 @@ class KohnShamGDA:
 
     @property
     def gda_device(self):
-
         if self.is_gda:
             return self._numint.device
         else:
@@ -74,7 +69,6 @@ class KohnShamGDA:
 
     @gda_device.setter
     def gda_device(self, value):
-
         if self.is_gda:
             self._numint.device = torch.device(value)
         else:
