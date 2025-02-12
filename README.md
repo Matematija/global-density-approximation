@@ -2,7 +2,7 @@
 
 Research code for neural-network approximations of electronic density functionals. This code is attached to the following publication:
 
-[INSERT WHEN READY](https://github.com/Matematija/global-density-approximation.git).
+**Neural network distillation of orbital dependent density functional theory** ([arXiv:2410.16408](https://arxiv.org/abs/2410.16408)).
 
 Code author: Matija Medvidović
 
@@ -44,7 +44,7 @@ grad_n = torch.randn(20000, 3) # shape = (..., grid_size, 3)
 coords = torch.randn(20000, 3) # shape = (..., grid_size, 3)
 weights = torch.randn(20000) # shape = (..., grid_size,)
 
-phi = gda.log_tau(n, grad_n, coords, weights)
+phi = gda(n, grad_n, coords, weights)
 log_tau = gda.log_tau(n, grad_n, coords, weights)
 # Log-tau implemented for numerical stability
 ```
@@ -75,8 +75,39 @@ ks.kernel()
 
 If `RKS.gda` field is not set, then the `RKS.kernel()` method will just run "normal" DFT using PySCF defaults. Furthermore, since the GDA approximation only models the kinetic energy density $\tau (\mathbf{r})$, if the `RKS.xc` field is set to a functional that does not require $\tau$ as an input, unmodified LibXC functionals are called as well.
 
-**[TO DO: TDDFT example]**
+## A differentiable [LibXC](https://libxc.gitlab.io/) wrapper
 
-### A differentiable [LibXC](https://libxc.gitlab.io/) wrapper
+This library includes a differentiable PyTorch wrapper around LibXC as a convenience. In short - we make the [`eval_xc`](https://github.com/pyscf/pyscf/blob/f2c2d3f963916fb64ae77241f1b44f24fa484d96/pyscf/dft/libxc.py#L684) function available in PySCF transparent to PyTorch [Autograd](https://pytorch.org/docs/stable/autograd.html). This presents a convenient unified API for calculating XC potentials and higher-order derivatives for experimentation with general parametrized functionals.
 
-**[TO DO]**
+An example calculation yielding the PBE potential matrix in the `ccpvdz` basis set $\chi _\mu (\mathbf{r})$:
+
+$$
+V ^{XC} _{\mu \nu} = \int d^3 \mathbf{r} \; \frac{\delta E _{XC}}{\delta n (\mathbf{r})} \chi _\mu (\mathbf{r}) \chi _\nu (\mathbf{r}) = \frac{\partial E_{XC}}{\partial {\Gamma _{\mu \nu}}}
+$$
+
+when the density is represented as $n (\mathbf{r}) = \sum _{\mu \nu} \Gamma _{\mu \nu} \chi _\mu (\mathbf{r}) \chi _\nu (\mathbf{r})$.
+
+```python
+from pyscf import gto, dft
+from torch import autograd
+from gda.libxc import eval_xc
+
+ao = torch.tensor(dft.numint.eval_ao(ks.mol, ks.grids.coords, deriv=1))
+dm = torch.tensor(ks.make_rdm1()).requires_grad_(True)
+
+def eval_energy(dm, ao):
+
+    ao_, grad_ao_ = ao[0], ao[1:]
+
+    density = torch.einsum('mn,im,in->i', dm, ao_, ao_)
+    grad_density = torch.einsum('mn,im,cin->ic', dm, ao_, grad_ao_)
+
+    exc = eval_xc('pbe', density, grad_density)
+
+    return weights @ exc
+
+E = eval_energy(dm, ao)
+V, = autograd.grad(E, dm)
+
+V.shape # (n_ao, n_ao)
+```
