@@ -93,7 +93,7 @@ class GDANumInt(NumInt):
         eps: float = 0.0,
         chunk_size: Optional[int] = None,
         device: Any = None,
-        dtype: Any = torch.float64,
+        dtype: Any = torch.float32,
     ):
 
         super().__init__()
