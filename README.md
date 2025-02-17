@@ -79,7 +79,7 @@ If `RKS.gda` field is not set, then the `RKS.kernel()` method will just run "nor
 
 This library includes a differentiable PyTorch wrapper around LibXC as a convenience. In short - we make the [`eval_xc`](https://github.com/pyscf/pyscf/blob/f2c2d3f963916fb64ae77241f1b44f24fa484d96/pyscf/dft/libxc.py#L684) function available in PySCF transparent to PyTorch [Autograd](https://pytorch.org/docs/stable/autograd.html). This presents a convenient unified API for calculating XC potentials and higher-order derivatives for experimentation with general parametrized functionals.
 
-An example calculation yielding the PBE potential matrix in the `ccpvdz` basis set $\chi _\mu (\mathbf{r})$:
+An example calculation yielding the PBE potential matrix in a basis set $\chi _\mu (\mathbf{r})$:
 
 $$
 V ^{XC} _{\mu \nu} = \int d^3 \mathbf{r} \frac{ \delta E _{XC} }{ \delta n ( \mathbf{r}) } \chi _\mu ( \mathbf{r} ) \chi _\nu ( \mathbf{r} ) = \frac{ \partial E _{XC} }{ \partial {\Gamma _{\mu \nu}} }
